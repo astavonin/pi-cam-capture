@@ -15,23 +15,32 @@ jobs:
     - uses: actions/checkout@v4
 
     - name: Install Rust toolchain
-      uses: actions-rs/toolchain@v1
+      uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: stable
-        target: aarch64-unknown-linux-gnu
-        override: true
+        targets: aarch64-unknown-linux-gnu
 
     - name: Install cross
       run: cargo install cross --git https://github.com/cross-rs/cross
 
     - name: Run clippy
+      if: github.ref != 'refs/heads/master'
+      run: cargo clippy -- -D warnings
+
+    - name: Build
+      if: github.ref != 'refs/heads/master'
+      run: cargo build
+
+    - name: Run clippy for aarch64
+      if: github.ref == 'refs/heads/master'
       run: cross clippy --target aarch64-unknown-linux-gnu -- -D warnings
 
-    - name: Build for aarch64
+    - name: Build for aarch64 (release)
+      if: github.ref == 'refs/heads/master'
       run: cross build --release --target aarch64-unknown-linux-gnu
 
-    # - name: Upload artifact
-      # uses: actions/upload-artifact@v4
-      # with:
-        # name: pi-cam-capture-aarch64
-        # path: target/aarch64-unknown-linux-gnu/release/pi-cam-capture
+    - name: Upload artifact
+      if: github.ref == 'refs/heads/master'
+      uses: actions/upload-artifact@v4
+      with:
+        name: pi-cam-capture-aarch64
+        path: target/aarch64-unknown-linux-gnu/release/pi-cam-capture

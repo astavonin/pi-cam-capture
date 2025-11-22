@@ -1,0 +1,6 @@
+#!/bin/sh
+
+# Run clippy to check for errors
+# Using cargo clippy for local checks (faster)
+# CI will run cross clippy for aarch64-specific checks
+cargo clippy -- -D warnings
