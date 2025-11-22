@@ -7,7 +7,7 @@ use v4l::FourCC;
 
 fn main() {
     // Create a new capture device with a few extra parameters
-    let mut dev = Device::new(0).expect("Failed to open device");
+    let dev = Device::new(0).expect("Failed to open device");
 
     // Let's say we want to explicitly request another format
     let mut fmt = dev.format().expect("Failed to read format");

@@ -5,3 +5,6 @@ edition = "2021"
 
 [dependencies]
 v4l = "0.14"
+
+[dev-dependencies]
+cargo-husky = { version = "1", features = ["user-hooks"] }
