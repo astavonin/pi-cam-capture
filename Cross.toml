@@ -1,0 +1,9 @@
+[target.aarch64-unknown-linux-gnu]
+# Use custom Docker image with updated libclang for bindgen compatibility
+# Build the image first with: docker build -t pi-cam-capture-cross:aarch64 -f Dockerfile.aarch64-cross .
+image = "ghcr.io/astavonin/cross-aarch64:llvm12"
+
+[build.env]
+passthrough = [
+    "RUST_BACKTRACE",
+]
