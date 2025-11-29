@@ -8,132 +8,17 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Validate virtual camera support on GitHub Actions runners
-  # Note: GitHub Actions runners use a minimal kernel without vivid built-in.
-  # We attempt to install it via linux-modules-extra package.
-  virtual-camera-check:
+  # Install and verify development dependencies
+  deps:
     runs-on: ubuntu-latest
     steps:
-    - name: System info
-      run: |
-        echo "=== System Information ==="
-        uname -r
-        cat /etc/os-release | head -5
+    - uses: actions/checkout@v4
 
-    - name: Check vivid module (pre-install)
-      run: |
-        echo "=== Checking vivid kernel module (before install) ==="
-        if modinfo vivid &>/dev/null; then
-          echo "✓ vivid module is available"
-        else
-          echo "✗ vivid module NOT found in base image"
-        fi
+    - name: Install dependencies
+      run: ./scripts/dev-setup.sh install
 
-    - name: Install linux-modules-extra for vivid
-      run: |
-        echo "=== Installing linux-modules-extra ==="
-        sudo apt-get update
-        KERNEL_VERSION=$(uname -r)
-        echo "Kernel version: $KERNEL_VERSION"
-        sudo apt-get install -y linux-modules-extra-${KERNEL_VERSION} || {
-          echo "⚠ Could not install linux-modules-extra-${KERNEL_VERSION}"
-          echo "Searching for available packages..."
-          apt-cache search linux-modules-extra | head -10
-        }
-
-    - name: Check vivid module (post-install)
-      id: vivid_check
-      run: |
-        echo "=== Checking vivid kernel module (after install) ==="
-        if modinfo vivid &>/dev/null; then
-          echo "✓ vivid module is now available"
-          modinfo vivid | head -10
-          echo "vivid_available=true" >> $GITHUB_OUTPUT
-        else
-          echo "✗ vivid module still NOT found"
-          echo "vivid_available=false" >> $GITHUB_OUTPUT
-        fi
-
-    - name: Load vivid module
-      if: steps.vivid_check.outputs.vivid_available == 'true'
-      run: |
-        echo "=== Loading vivid with 2 virtual devices ==="
-        sudo modprobe vivid n_devs=2 node_types=0x1,0x1
-        echo "✓ vivid loaded successfully"
-
-    - name: Verify vivid devices created
-      if: steps.vivid_check.outputs.vivid_available == 'true'
-      run: |
-        echo "=== Checking /dev/video* devices ==="
-        ls -la /dev/video* || echo "No video devices found"
-        echo ""
-        echo "=== V4L2 device info ==="
-        sudo apt-get install -y v4l-utils
-        for dev in /dev/video*; do
-          echo "--- $dev ---"
-          v4l2-ctl --device=$dev --info 2>/dev/null || echo "Could not query $dev"
-        done
-
-    - name: Test vivid capture capability
-      if: steps.vivid_check.outputs.vivid_available == 'true'
-      run: |
-        echo "=== Testing frame capture from vivid ==="
-        v4l2-ctl --device=/dev/video0 --stream-mmap --stream-count=5 && echo "✓ Captured 5 frames successfully"
-
-    - name: Install v4l2loopback-dkms
-      id: loopback_check
-      run: |
-        echo "=== Installing v4l2loopback-dkms ==="
-        sudo apt-get install -y v4l2loopback-dkms
-        if modinfo v4l2loopback &>/dev/null; then
-          echo "✓ v4l2loopback module is available"
-          modinfo v4l2loopback | head -10
-          echo "loopback_available=true" >> $GITHUB_OUTPUT
-        else
-          echo "✗ v4l2loopback module NOT available after DKMS install"
-          echo "loopback_available=false" >> $GITHUB_OUTPUT
-        fi
-
-    - name: Load v4l2loopback
-      if: steps.loopback_check.outputs.loopback_available == 'true'
-      run: |
-        echo "=== Loading v4l2loopback ==="
-        sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="Test Loopback"
-        echo "✓ v4l2loopback loaded"
-        ls -la /dev/video10
-
-    - name: Test v4l2loopback with ffmpeg
-      if: steps.loopback_check.outputs.loopback_available == 'true'
-      run: |
-        echo "=== Testing v4l2loopback with ffmpeg test pattern ==="
-        sudo apt-get install -y ffmpeg
-        # Start ffmpeg in background, sending test pattern to loopback device
-        ffmpeg -f lavfi -i testsrc=size=640x480:rate=30 -pix_fmt yuyv422 -f v4l2 /dev/video10 &
-        FFMPEG_PID=$!
-        sleep 2
-        # Try to capture from loopback
-        v4l2-ctl --device=/dev/video10 --stream-mmap --stream-count=5 && echo "✓ Captured from loopback"
-        kill $FFMPEG_PID 2>/dev/null || true
-
-    - name: Summary
-      run: |
-        echo "=== Virtual Camera Support Summary ==="
-        echo "vivid:        ${{ steps.vivid_check.outputs.vivid_available || 'false' }}"
-        echo "v4l2loopback: ${{ steps.loopback_check.outputs.loopback_available || 'false' }}"
-        echo ""
-        if [[ "${{ steps.vivid_check.outputs.vivid_available }}" == "true" ]] || [[ "${{ steps.loopback_check.outputs.loopback_available }}" == "true" ]]; then
-          echo "✓ At least one virtual camera method available - integration tests can run"
-        else
-          echo "⚠ No virtual camera support - integration tests will be skipped"
-        fi
-
-    - name: Cleanup
-      if: always()
-      run: |
-        echo "=== Unloading modules ==="
-        sudo rmmod v4l2loopback 2>/dev/null || true
-        sudo rmmod vivid 2>/dev/null || true
-        echo "✓ Cleanup complete"
+    - name: Verify installation
+      run: ./scripts/dev-setup.sh verify
 
   build:
     runs-on: ubuntu-latest
