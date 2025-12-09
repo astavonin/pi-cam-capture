@@ -1,0 +1,27 @@
+# Clippy configuration for pi-cam-capture
+# https://doc.rust-lang.org/clippy/configuration.html
+
+# Minimum supported Rust version
+msrv = "1.75"
+
+# Complexity thresholds
+cognitive-complexity-threshold = 25
+excessive-nesting-threshold = 4
+too-many-arguments-threshold = 7
+too-many-lines-threshold = 100
+type-complexity-threshold = 250
+
+# Documentation
+doc-valid-idents = ["V4L2", "YUYV", "MJPG", "RGB", "FFmpeg", "GitHub"]
+
+# Allow these patterns in tests
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
+# Stricter checks
+avoid-breaking-exported-api = true
+enforced-import-renames = []
+
+# Single char bindings to allow (common iterator vars)
+allowed-idents-below-min-chars = ["x", "y", "i", "j", "n", "f"]
+min-ident-chars-threshold = 2

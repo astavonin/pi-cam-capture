@@ -1,9 +1,11 @@
+//! Mock device implementation for testing without hardware.
+
 use crate::traits::{
     CameraDevice, CaptureStream, DeviceCapabilities, Format, FourCC, Frame, FrameMetadata, Result,
 };
 use std::time::Duration;
 
-/// Mock device for testing without hardware
+/// Mock device for testing without hardware.
 pub struct MockDevice {
     capabilities: DeviceCapabilities,
     format: Format,
@@ -17,6 +19,8 @@ impl Default for MockDevice {
 }
 
 impl MockDevice {
+    /// Create a new mock device with default settings.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             capabilities: DeviceCapabilities {
@@ -31,11 +35,15 @@ impl MockDevice {
         }
     }
 
+    /// Set the format for this mock device.
+    #[must_use]
     pub fn with_format(mut self, format: Format) -> Self {
         self.format = format;
         self
     }
 
+    /// Set the capabilities for this mock device.
+    #[must_use]
     pub fn with_capabilities(mut self, capabilities: DeviceCapabilities) -> Self {
         self.capabilities = capabilities;
         self
@@ -66,21 +74,26 @@ impl CameraDevice for MockDevice {
     }
 }
 
-/// Test pattern types for mock frame generation
+/// Test pattern types for mock frame generation.
 #[derive(Debug, Clone, Copy)]
 pub enum TestPattern {
+    /// SMPTE color bars pattern.
     ColorBars,
+    /// Horizontal gradient from dark to light.
     Gradient,
+    /// Solid color with specified Y, U, V values.
     Solid(u8, u8, u8),
 }
 
-/// Mock capture stream for testing
+/// Mock capture stream for testing.
 pub struct MockStream<'a> {
     device: &'a mut MockDevice,
     pattern: TestPattern,
 }
 
 impl MockStream<'_> {
+    /// Set the test pattern for frame generation.
+    #[must_use]
     pub fn with_pattern(mut self, pattern: TestPattern) -> Self {
         self.pattern = pattern;
         self
@@ -99,14 +112,14 @@ impl CaptureStream for MockStream<'_> {
             data,
             metadata: FrameMetadata {
                 sequence: seq,
-                timestamp: Duration::from_millis(seq as u64 * 33), // ~30fps
+                timestamp: Duration::from_millis(u64::from(seq) * 33), // ~30fps
                 bytes_used: format.size,
             },
         })
     }
 }
 
-/// Generate test frame data based on pattern
+/// Generate test frame data based on pattern.
 fn generate_test_frame(format: &Format, pattern: TestPattern) -> Vec<u8> {
     let size = (format.width * format.height * 2) as usize; // YUYV = 2 bytes/pixel
     let mut data = vec![0u8; size];
@@ -126,7 +139,7 @@ fn generate_test_frame(format: &Format, pattern: TestPattern) -> Vec<u8> {
     data
 }
 
-/// Generate YUYV color bars pattern
+/// Generate YUYV color bars pattern.
 fn generate_color_bars(data: &mut [u8], width: u32, height: u32) {
     // 8 color bars: White, Yellow, Cyan, Green, Magenta, Red, Blue, Black
     // YUYV values for each bar
@@ -159,10 +172,11 @@ fn generate_color_bars(data: &mut [u8], width: u32, height: u32) {
     }
 }
 
-/// Generate YUYV horizontal gradient pattern
+/// Generate YUYV horizontal gradient pattern.
 fn generate_gradient(data: &mut [u8], width: u32, height: u32) {
     for y in 0..height {
         for x in (0..width).step_by(2) {
+            #[allow(clippy::cast_possible_truncation)]
             let y_val = ((x * 255) / width) as u8;
             let offset = ((y * width + x) * 2) as usize;
 
@@ -176,7 +190,7 @@ fn generate_gradient(data: &mut [u8], width: u32, height: u32) {
     }
 }
 
-/// Generate solid color YUYV frame
+/// Generate solid color YUYV frame.
 fn generate_solid(data: &mut [u8], y: u8, u: u8, v: u8) {
     for i in (0..data.len()).step_by(4) {
         if i + 3 < data.len() {
@@ -203,12 +217,12 @@ mod tests {
     #[test]
     fn test_mock_device_format() {
         let mut device = MockDevice::new();
-        let format = device.format().unwrap();
+        let format = device.format().expect("format should succeed");
         assert_eq!(format.width, 640);
         assert_eq!(format.height, 480);
 
         let new_format = Format::new(1280, 720, FourCC::YUYV);
-        let actual = device.set_format(&new_format).unwrap();
+        let actual = device.set_format(&new_format).expect("set_format should succeed");
         assert_eq!(actual.width, 1280);
         assert_eq!(actual.height, 720);
     }
@@ -216,13 +230,13 @@ mod tests {
     #[test]
     fn test_mock_stream_capture() {
         let mut device = MockDevice::new();
-        let mut stream = device.create_stream(4).unwrap();
+        let mut stream = device.create_stream(4).expect("create_stream should succeed");
 
-        let frame1 = stream.next_frame().unwrap();
+        let frame1 = stream.next_frame().expect("next_frame should succeed");
         assert_eq!(frame1.metadata.sequence, 0);
         assert!(!frame1.data.is_empty());
 
-        let frame2 = stream.next_frame().unwrap();
+        let frame2 = stream.next_frame().expect("next_frame should succeed");
         assert_eq!(frame2.metadata.sequence, 1);
     }
 
