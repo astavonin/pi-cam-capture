@@ -116,6 +116,83 @@ verify_install() {
     fi
 }
 
+# Load vivid module with recommended configuration
+load_vivid() {
+    info "Loading vivid module..."
+
+    # Check if vivid module is available
+    if ! modinfo vivid &>/dev/null; then
+        error "vivid module not available"
+        error "Install with: sudo apt-get install -y linux-modules-extra-\$(uname -r)"
+        return 1
+    fi
+
+    # Check if already loaded
+    if lsmod | grep -q "^vivid"; then
+        warn "vivid module already loaded"
+        info "Unload first with: $0 unload-vivid"
+        return 1
+    fi
+
+    # Load vivid with recommended parameters:
+    # - n_devs=2: Create 2 virtual devices
+    # - node_types=0x1,0x1: Both are video capture devices
+    # - input_types=0x81,0x81: Webcam (0x01) + HDMI (0x80) inputs
+    info "Configuration: n_devs=2 node_types=0x1,0x1 input_types=0x81,0x81"
+    $SUDO modprobe vivid n_devs=2 node_types=0x1,0x1 input_types=0x81,0x81
+
+    if [ $? -eq 0 ]; then
+        success "vivid module loaded successfully"
+        echo ""
+        info "Verifying device creation..."
+
+        # Wait a moment for devices to appear
+        sleep 1
+
+        # List video devices
+        if ls /dev/video* &>/dev/null; then
+            success "Video devices created:"
+            ls -la /dev/video* | while read -r line; do
+                echo "  $line"
+            done
+        else
+            error "No video devices found"
+            return 1
+        fi
+
+        echo ""
+        # List devices with v4l2-ctl
+        if command -v v4l2-ctl &>/dev/null; then
+            info "Device information:"
+            $SUDO v4l2-ctl --list-devices
+        fi
+    else
+        error "Failed to load vivid module"
+        return 1
+    fi
+}
+
+# Unload vivid module
+unload_vivid() {
+    info "Unloading vivid module..."
+
+    # Check if vivid is loaded
+    if ! lsmod | grep -q "^vivid"; then
+        warn "vivid module is not loaded"
+        return 0
+    fi
+
+    $SUDO modprobe -r vivid
+
+    if [ $? -eq 0 ]; then
+        success "vivid module unloaded successfully"
+    else
+        error "Failed to unload vivid module"
+        error "Check if devices are in use: lsof /dev/video*"
+        return 1
+    fi
+}
+
 # Main
 main() {
     case "${1:-install}" in
@@ -127,12 +204,22 @@ main() {
         verify)
             verify_install
             ;;
+        load-vivid)
+            check_sudo
+            load_vivid
+            ;;
+        unload-vivid)
+            check_sudo
+            unload_vivid
+            ;;
         *)
-            echo "Usage: $0 [install|verify]"
+            echo "Usage: $0 [install|verify|load-vivid|unload-vivid]"
             echo ""
             echo "Commands:"
-            echo "  install   Install required packages (default)"
-            echo "  verify    Verify installation"
+            echo "  install       Install required packages (default)"
+            echo "  verify        Verify installation"
+            echo "  load-vivid    Load vivid module with recommended configuration"
+            echo "  unload-vivid  Unload vivid module"
             exit 1
             ;;
     esac

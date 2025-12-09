@@ -20,6 +20,20 @@ jobs:
     - name: Verify installation
       run: ./scripts/dev-setup.sh verify
 
+    - name: Load vivid module
+      run: ./scripts/dev-setup.sh load-vivid
+
+    - name: Verify vivid devices
+      run: |
+        echo "Checking for video devices..."
+        ls -la /dev/video* || (echo "ERROR: No video devices found" && exit 1)
+        echo ""
+        echo "Listing vivid devices:"
+        sudo v4l2-ctl --list-devices
+        echo ""
+        echo "Testing capture from /dev/video0:"
+        sudo v4l2-ctl --device=/dev/video0 --stream-mmap --stream-count=1
+
   build:
     runs-on: ubuntu-latest
 

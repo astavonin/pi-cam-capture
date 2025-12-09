@@ -99,6 +99,93 @@ pub struct Frame {
     pub metadata: FrameMetadata,
 }
 
+impl Frame {
+    /// Get RGB values for a pixel at the specified coordinates.
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - X coordinate (0-based)
+    /// * `y` - Y coordinate (0-based)
+    /// * `width` - Frame width in pixels
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some((r, g, b))` if the coordinates are valid, `None` otherwise.
+    ///
+    /// # Notes
+    ///
+    /// This method assumes YUYV format (2 bytes per pixel). For odd x coordinates,
+    /// it uses the Y value from the next pixel pair with the shared U/V values.
+    #[must_use]
+    pub fn pixel_at(&self, x: u32, y: u32, width: u32) -> Option<(u8, u8, u8)> {
+        // YUYV format: [Y0 U Y1 V] repeats
+        // Each pair of pixels shares U and V values
+
+        // Calculate the byte offset for this pixel
+        let pair_x = x & !1; // Round down to even x coordinate
+        let offset = ((y * width + pair_x) * 2) as usize;
+
+        // Check bounds - need 4 bytes starting at offset
+        if offset + 3 >= self.data.len() {
+            return None;
+        }
+
+        // Extract YUYV values using safe indexing
+        let y_val = if x % 2 == 0 {
+            *self.data.get(offset)? // Y0
+        } else {
+            *self.data.get(offset + 2)? // Y1
+        };
+        let u = *self.data.get(offset + 1)?;
+        let v = *self.data.get(offset + 3)?;
+
+        // Convert YUV to RGB
+        Some(yuv_to_rgb(y_val, u, v))
+    }
+}
+
+/// Convert YUV values to RGB.
+///
+/// Uses the ITU-R BT.601 conversion formula.
+///
+/// # Arguments
+///
+/// * `y` - Luminance value (16-235 for studio range)
+/// * `u` - Blue-difference chroma value (16-240)
+/// * `v` - Red-difference chroma value (16-240)
+///
+/// # Returns
+///
+/// RGB tuple with values clamped to 0-255 range.
+#[must_use]
+#[allow(clippy::many_single_char_names)]
+fn yuv_to_rgb(y: u8, u: u8, v: u8) -> (u8, u8, u8) {
+    // ITU-R BT.601 conversion
+    let y_f = f32::from(y);
+    let u_f = f32::from(u) - 128.0;
+    let v_f = f32::from(v) - 128.0;
+
+    let r = 1.402f32.mul_add(v_f, y_f);
+    let g = 0.714_14f32.mul_add(-v_f, 0.344_14f32.mul_add(-u_f, y_f));
+    let b = 1.772f32.mul_add(u_f, y_f);
+
+    let clamp = |val: f32| -> u8 {
+        if val < 0.0 {
+            0
+        } else if val > 255.0 {
+            255
+        } else {
+            #[allow(clippy::cast_possible_truncation)]
+            #[allow(clippy::cast_sign_loss)]
+            {
+                val as u8
+            }
+        }
+    };
+
+    (clamp(r), clamp(g), clamp(b))
+}
+
 /// Error type for camera operations.
 #[derive(Debug)]
 pub enum CameraError {
