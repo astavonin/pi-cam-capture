@@ -29,13 +29,17 @@ fn vivid_available() -> Option<u32> {
 
     for index in 0..10 {
         let name_path = video4linux.join(format!("video{index}")).join("name");
-        if let Ok(name) = fs::read_to_string(&name_path) {
-            if name.to_lowercase().contains("vivid") {
-                // Verify we can actually open it
-                if V4L2Device::open(index).is_ok() {
-                    return Some(index);
-                }
-            }
+        let Ok(name) = fs::read_to_string(&name_path) else {
+            continue;
+        };
+
+        if !name.to_lowercase().contains("vivid") {
+            continue;
+        }
+
+        // Verify we can actually open it
+        if V4L2Device::open(index).is_ok() {
+            return Some(index);
         }
     }
     None

@@ -17,6 +17,7 @@ doc-valid-idents = ["V4L2", "YUYV", "MJPG", "RGB", "FFmpeg", "GitHub"]
 # Allow these patterns in tests
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
+allow-indexing-slicing-in-tests = true
 
 # Stricter checks
 avoid-breaking-exported-api = true
