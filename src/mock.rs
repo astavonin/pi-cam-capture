@@ -24,9 +24,9 @@ impl MockDevice {
     pub fn new() -> Self {
         Self {
             capabilities: DeviceCapabilities {
-                driver: "mock".to_string(),
-                card: "Mock Camera".to_string(),
-                bus_info: "mock:0".to_string(),
+                driver: "mock".to_owned(),
+                card: "Mock Camera".to_owned(),
+                bus_info: "mock:0".to_owned(),
                 can_capture: true,
                 can_stream: true,
             },
