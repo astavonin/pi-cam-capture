@@ -8,17 +8,29 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Install and verify development dependencies
-  deps:
+  # Unit tests - no special requirements
+  unit-tests:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
 
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Run unit tests
+      run: cargo test --lib
+
+  # Integration tests - require vivid virtual camera
+  integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
     - name: Install dependencies
       run: ./scripts/dev-setup.sh install
-
-    - name: Verify installation
-      run: ./scripts/dev-setup.sh verify
 
     - name: Load vivid module
       run: ./scripts/dev-setup.sh load-vivid
@@ -30,9 +42,13 @@ jobs:
         echo ""
         echo "Listing vivid devices:"
         sudo v4l2-ctl --list-devices
-        echo ""
-        echo "Testing capture from /dev/video0:"
-        sudo v4l2-ctl --device=/dev/video0 --stream-mmap --stream-count=1
+
+    - name: Run integration tests
+      run: sudo -E env "PATH=$PATH" cargo test --features integration -- --test-threads=1
+
+    - name: Cleanup
+      if: always()
+      run: ./scripts/dev-setup.sh unload-vivid || true
 
   build:
     runs-on: ubuntu-latest
