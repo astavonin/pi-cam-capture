@@ -166,10 +166,69 @@ load_vivid() {
             info "Device information:"
             $SUDO v4l2-ctl --list-devices
         fi
+
+        # Configure test patterns on vivid devices
+        configure_vivid_patterns
     else
         error "Failed to load vivid module"
         return 1
     fi
+}
+
+# Configure different test patterns on vivid devices
+# Device 1: Horizontal Gradient (pattern 14)
+# Device 2: Vertical Lines (pattern 16)
+configure_vivid_patterns() {
+    info "Configuring test patterns on vivid devices..."
+
+    # Find vivid devices by checking sysfs
+    local vivid_devices=()
+    for dev in /sys/class/video4linux/video*; do
+        if [ -f "$dev/name" ]; then
+            local name=$(cat "$dev/name" 2>/dev/null)
+            if echo "$name" | grep -qi "vivid"; then
+                local devnum=$(basename "$dev")
+                vivid_devices+=("/dev/$devnum")
+            fi
+        fi
+    done
+
+    if [ ${#vivid_devices[@]} -eq 0 ]; then
+        warn "No vivid devices found in sysfs"
+        return 1
+    fi
+
+    # Pattern assignments (from v4l2-ctl --list-ctrls-menus):
+    # 20 = Gray Ramp (gradient)
+    # 0  = 75% Colorbar
+    local patterns=(20 0)
+    local pattern_names=("Gray Ramp" "75% Colorbar")
+
+    for i in "${!vivid_devices[@]}"; do
+        local dev="${vivid_devices[$i]}"
+        local pattern_idx=$((i % ${#patterns[@]}))
+        local pattern="${patterns[$pattern_idx]}"
+        local pattern_name="${pattern_names[$pattern_idx]}"
+
+        # Set format to YUYV 640x480 for consistent testing
+        if v4l2-ctl -d "$dev" --set-fmt-video=width=640,height=480,pixelformat=YUYV 2>/dev/null; then
+            success "$dev: Set format to 640x480 YUYV"
+        else
+            warn "$dev: Could not set format (may not be a capture device)"
+            continue
+        fi
+
+        # Set test pattern
+        if v4l2-ctl -d "$dev" --set-ctrl=test_pattern="$pattern" 2>/dev/null; then
+            success "$dev: Set test pattern to $pattern ($pattern_name)"
+        else
+            warn "$dev: Could not set test pattern"
+        fi
+    done
+
+    echo ""
+    info "Test pattern configuration complete"
+    info "View with: ffplay -f v4l2 <device> or v4l2-ctl -d <device> --stream-mmap --stream-count=1 --stream-to=frame.raw"
 }
 
 # Unload vivid module
