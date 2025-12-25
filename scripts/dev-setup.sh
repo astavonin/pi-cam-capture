@@ -200,9 +200,9 @@ configure_vivid_patterns() {
 
     # Pattern assignments (from v4l2-ctl --list-ctrls-menus):
     # 20 = Gray Ramp (gradient)
-    # 0  = 75% Colorbar
-    local patterns=(20 0)
-    local pattern_names=("Gray Ramp" "75% Colorbar")
+    # 1  = 100% Colorbar (matches SMPTE color bars in validation.rs)
+    local patterns=(20 1)
+    local pattern_names=("Gray Ramp" "100% Colorbar")
 
     for i in "${!vivid_devices[@]}"; do
         local dev="${vivid_devices[$i]}"
@@ -211,7 +211,7 @@ configure_vivid_patterns() {
         local pattern_name="${pattern_names[$pattern_idx]}"
 
         # Set format to YUYV 640x480 for consistent testing
-        if v4l2-ctl -d "$dev" --set-fmt-video=width=640,height=480,pixelformat=YUYV 2>/dev/null; then
+        if $SUDO v4l2-ctl -d "$dev" --set-fmt-video=width=640,height=480,pixelformat=YUYV 2>/dev/null; then
             success "$dev: Set format to 640x480 YUYV"
         else
             warn "$dev: Could not set format (may not be a capture device)"
@@ -219,7 +219,7 @@ configure_vivid_patterns() {
         fi
 
         # Set test pattern
-        if v4l2-ctl -d "$dev" --set-ctrl=test_pattern="$pattern" 2>/dev/null; then
+        if $SUDO v4l2-ctl -d "$dev" --set-ctrl=test_pattern="$pattern" 2>/dev/null; then
             success "$dev: Set test pattern to $pattern ($pattern_name)"
         else
             warn "$dev: Could not set test pattern"
