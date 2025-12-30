@@ -1,7 +1,8 @@
 //! Mock device implementation for testing without hardware.
 
+use crate::error::Result;
 use crate::traits::{
-    CameraDevice, CaptureStream, DeviceCapabilities, Format, FourCC, Frame, FrameMetadata, Result,
+    CameraDevice, CaptureStream, DeviceCapabilities, Format, FourCC, Frame, FrameMetadata,
 };
 use std::time::Duration;
 

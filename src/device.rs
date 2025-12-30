@@ -6,9 +6,9 @@ use v4l::io::traits::CaptureStream as V4lCaptureStream;
 use v4l::video::Capture;
 use v4l::Device;
 
+use crate::error::{DeviceError, Result, StreamError};
 use crate::traits::{
-    CameraDevice, CameraError, CaptureStream, DeviceCapabilities, Format, FourCC, Frame,
-    FrameMetadata, Result,
+    CameraDevice, CaptureStream, DeviceCapabilities, Format, FourCC, Frame, FrameMetadata,
 };
 use std::time::Duration;
 
@@ -22,11 +22,11 @@ impl V4L2Device {
     /// Open a V4L2 device by index (e.g., 0 for /dev/video0).
     pub fn open(index: u32) -> Result<Self> {
         let device = Device::new(index as usize)
-            .map_err(|err| CameraError::DeviceOpenFailed(err.to_string()))?;
+            .map_err(|err| DeviceError::OpenFailed(err.to_string()))?;
 
         let caps = device
             .query_caps()
-            .map_err(|err| CameraError::DeviceOpenFailed(err.to_string()))?;
+            .map_err(|err| DeviceError::QueryCapsFailed(err.to_string()))?;
 
         let capabilities = DeviceCapabilities {
             driver: caps.driver,
@@ -54,7 +54,7 @@ impl CameraDevice for V4L2Device {
         let fmt = self
             .device
             .format()
-            .map_err(|err| CameraError::StreamError(err.to_string()))?;
+            .map_err(|err| StreamError::GetFormatFailed(err.to_string()))?;
 
         Ok(Format {
             width: fmt.width,
@@ -69,7 +69,7 @@ impl CameraDevice for V4L2Device {
         let mut fmt = self
             .device
             .format()
-            .map_err(|err| CameraError::StreamError(err.to_string()))?;
+            .map_err(|err| StreamError::GetFormatFailed(err.to_string()))?;
 
         fmt.width = format.width;
         fmt.height = format.height;
@@ -78,7 +78,7 @@ impl CameraDevice for V4L2Device {
         let fmt = self
             .device
             .set_format(&fmt)
-            .map_err(|err| CameraError::StreamError(err.to_string()))?;
+            .map_err(|err| StreamError::SetFormatFailed(err.to_string()))?;
 
         Ok(Format {
             width: fmt.width,
@@ -91,7 +91,7 @@ impl CameraDevice for V4L2Device {
 
     fn create_stream(&mut self, buffer_count: u32) -> Result<Self::Stream<'_>> {
         let stream = Stream::with_buffers(&self.device, Type::VideoCapture, buffer_count)
-            .map_err(|err| CameraError::StreamError(err.to_string()))?;
+            .map_err(|err| StreamError::StartFailed(err.to_string()))?;
 
         Ok(V4L2Stream { stream })
     }
@@ -107,7 +107,7 @@ impl CaptureStream for V4L2Stream<'_> {
         let (buf, meta) = self
             .stream
             .next()
-            .map_err(|err| CameraError::StreamError(err.to_string()))?;
+            .map_err(|err| StreamError::CaptureFailed(err.to_string()))?;
 
         // Safe conversions: V4L2 timestamps are always non-negative in practice
         #[allow(clippy::cast_sign_loss)]

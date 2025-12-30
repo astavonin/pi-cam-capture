@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use crate::error::Result;
+
 /// Pixel format representation (e.g., YUYV, MJPG, RGB3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FourCC(pub [u8; 4]);
@@ -185,47 +187,6 @@ fn yuv_to_rgb(y: u8, u: u8, v: u8) -> (u8, u8, u8) {
 
     (clamp(r), clamp(g), clamp(b))
 }
-
-/// Error type for camera operations.
-#[derive(Debug)]
-pub enum CameraError {
-    /// Device with given index was not found.
-    DeviceNotFound(u32),
-    /// Failed to open device.
-    DeviceOpenFailed(String),
-    /// Requested format is not supported.
-    FormatNotSupported(Format),
-    /// Error during streaming operation.
-    StreamError(String),
-    /// Operation timed out.
-    Timeout,
-    /// I/O error.
-    Io(std::io::Error),
-}
-
-impl std::fmt::Display for CameraError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::DeviceNotFound(idx) => write!(f, "Device {idx} not found"),
-            Self::DeviceOpenFailed(msg) => write!(f, "Failed to open device: {msg}"),
-            Self::FormatNotSupported(fmt) => write!(f, "Format not supported: {fmt:?}"),
-            Self::StreamError(msg) => write!(f, "Stream error: {msg}"),
-            Self::Timeout => write!(f, "Operation timed out"),
-            Self::Io(err) => write!(f, "I/O error: {err}"),
-        }
-    }
-}
-
-impl std::error::Error for CameraError {}
-
-impl From<std::io::Error> for CameraError {
-    fn from(err: std::io::Error) -> Self {
-        Self::Io(err)
-    }
-}
-
-/// Result type for camera operations.
-pub type Result<T> = std::result::Result<T, CameraError>;
 
 /// Abstraction over camera device operations.
 pub trait CameraDevice {

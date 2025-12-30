@@ -3,7 +3,8 @@
 //! This module provides functions to validate that captured frames contain
 //! expected test patterns. Useful for integration testing with virtual cameras.
 
-use crate::traits::{CameraError, Format, Frame, Result};
+use crate::error::{Result, StreamError};
+use crate::traits::{Format, Frame};
 
 /// Expected RGB values for SMPTE color bars (8 bars).
 ///
@@ -39,7 +40,7 @@ const COLOR_TOLERANCE: i32 = 15;
 /// # Returns
 ///
 /// * `Ok(())` if the color bars are valid
-/// * `Err(CameraError::StreamError)` if validation fails
+/// * `Err(StreamError::CaptureFailed)` if validation fails
 ///
 /// # Errors
 ///
@@ -58,16 +59,17 @@ pub fn validate_color_bars(frame: &Frame, format: &Format) -> Result<()> {
         let sample_x = (bar_idx as u32 * bar_width) + (bar_width / 2);
 
         let actual_rgb = frame.pixel_at(sample_x, center_y, width).ok_or_else(|| {
-            CameraError::StreamError(format!(
+            StreamError::CaptureFailed(format!(
                 "Failed to get pixel at ({sample_x}, {center_y})"
             ))
         })?;
 
         if !colors_match(actual_rgb, *expected_rgb, COLOR_TOLERANCE) {
-            return Err(CameraError::StreamError(format!(
+            return Err(StreamError::CaptureFailed(format!(
                 "Color bar {bar_idx} mismatch at ({sample_x}, {center_y}): \
                  expected RGB{expected_rgb:?}, got RGB{actual_rgb:?}"
-            )));
+            ))
+            .into());
         }
     }
 
@@ -89,7 +91,7 @@ pub fn validate_color_bars(frame: &Frame, format: &Format) -> Result<()> {
 /// # Returns
 ///
 /// * `Ok(())` if the gradient is valid
-/// * `Err(CameraError::StreamError)` if validation fails
+/// * `Err(StreamError::CaptureFailed)` if validation fails
 ///
 /// # Errors
 ///
@@ -110,7 +112,7 @@ pub fn validate_gradient(frame: &Frame, format: &Format) -> Result<()> {
 
     for x in (0..width).step_by(sample_step as usize) {
         let (r, g, b) = frame.pixel_at(x, center_y, width).ok_or_else(|| {
-            CameraError::StreamError(format!("Failed to get pixel at ({x}, {center_y})"))
+            StreamError::CaptureFailed(format!("Failed to get pixel at ({x}, {center_y})"))
         })?;
 
         // Calculate luminance (Y' in Rec. 601)
@@ -126,10 +128,11 @@ pub fn validate_gradient(frame: &Frame, format: &Format) -> Result<()> {
         if let Some(prev) = prev_luminance {
             if luminance < prev - 1.0 {
                 // Allow small decreases due to rounding
-                return Err(CameraError::StreamError(format!(
+                return Err(StreamError::CaptureFailed(format!(
                     "Gradient not monotonically increasing at x={x}: \
                      luminance {luminance} < previous {prev}"
-                )));
+                ))
+                .into());
             }
         }
 
@@ -141,10 +144,11 @@ pub fn validate_gradient(frame: &Frame, format: &Format) -> Result<()> {
     if let (Some(first), Some(last)) = (first_luminance, last_luminance) {
         let luminance_change = last - first;
         if luminance_change < 50.0 {
-            return Err(CameraError::StreamError(format!(
+            return Err(StreamError::CaptureFailed(format!(
                 "Insufficient luminance change for gradient: {luminance_change} \
                  (expected at least 50.0)"
-            )));
+            ))
+            .into());
         }
     }
 
@@ -162,7 +166,7 @@ pub fn validate_gradient(frame: &Frame, format: &Format) -> Result<()> {
 /// # Returns
 ///
 /// * `Ok(())` if the sequence is valid
-/// * `Err(CameraError::StreamError)` if validation fails
+/// * `Err(StreamError::CaptureFailed)` if validation fails
 ///
 /// # Errors
 ///
@@ -171,27 +175,29 @@ pub fn validate_gradient(frame: &Frame, format: &Format) -> Result<()> {
 /// - Any sequence number doesn't increment by exactly 1 from the previous
 pub fn validate_frame_sequence(frames: &[Frame]) -> Result<()> {
     if frames.is_empty() {
-        return Err(CameraError::StreamError(
+        return Err(StreamError::CaptureFailed(
             "Cannot validate empty frame sequence".to_owned(),
-        ));
+        )
+        .into());
     }
 
     for i in 1..frames.len() {
         let prev_frame = frames.get(i - 1).ok_or_else(|| {
-            CameraError::StreamError(format!("Failed to get frame at index {}", i - 1))
+            StreamError::CaptureFailed(format!("Failed to get frame at index {}", i - 1))
         })?;
         let curr_frame = frames.get(i).ok_or_else(|| {
-            CameraError::StreamError(format!("Failed to get frame at index {i}"))
+            StreamError::CaptureFailed(format!("Failed to get frame at index {i}"))
         })?;
 
         let prev_seq = prev_frame.metadata.sequence;
         let curr_seq = curr_frame.metadata.sequence;
 
         if curr_seq != prev_seq + 1 {
-            return Err(CameraError::StreamError(format!(
+            return Err(StreamError::CaptureFailed(format!(
                 "Frame sequence gap at index {i}: expected {}, got {curr_seq}",
                 prev_seq + 1
-            )));
+            ))
+            .into());
         }
     }
 

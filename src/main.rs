@@ -9,7 +9,7 @@ fn main() {
     }
 }
 
-fn run() -> pi_cam_capture::traits::Result<()> {
+fn run() -> pi_cam_capture::Result<()> {
     let mut device = V4L2Device::open(0)?;
 
     println!("Device: {}", device.capabilities().card);
