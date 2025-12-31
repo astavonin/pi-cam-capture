@@ -11,6 +11,7 @@ integration = []
 [dependencies]
 v4l = "0.14"
 thiserror = "2.0"
+log = "0.4"
 
 [dev-dependencies]
 cargo-husky = { version = "1", features = ["user-hooks"] }
