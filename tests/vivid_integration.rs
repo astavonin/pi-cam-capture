@@ -162,7 +162,7 @@ fn test_vivid_capture_single_frame() {
     let format = device.set_format(&format).expect("Failed to set format");
 
     // Create stream and capture a frame
-    let mut stream = device.create_stream(4).expect("Failed to create stream");
+    let mut stream = device.create_stream(4, 30).expect("Failed to create stream");
     let frame = stream.next_frame().expect("Failed to capture frame");
 
     println!("Captured frame:");
@@ -192,7 +192,7 @@ fn test_vivid_capture_multiple_frames() {
     let format = Format::new(640, 480, FourCC::YUYV);
     device.set_format(&format).expect("Failed to set format");
 
-    let mut stream = device.create_stream(4).expect("Failed to create stream");
+    let mut stream = device.create_stream(4, 30).expect("Failed to create stream");
 
     // Capture multiple frames
     let frame_count = 10;
@@ -227,7 +227,7 @@ fn test_vivid_gradient_pattern() {
     let format = Format::new(640, 480, FourCC::YUYV);
     let format = device.set_format(&format).expect("Failed to set format");
 
-    let mut stream = device.create_stream(4).expect("Failed to create stream");
+    let mut stream = device.create_stream(4, 30).expect("Failed to create stream");
     let frame = stream.next_frame().expect("Failed to capture frame");
 
     // First vivid device should be configured with Gray Ramp (gradient) pattern
@@ -255,7 +255,7 @@ fn test_vivid_colorbar_pattern() {
     let format = Format::new(640, 480, FourCC::YUYV);
     let format = device.set_format(&format).expect("Failed to set format");
 
-    let mut stream = device.create_stream(4).expect("Failed to create stream");
+    let mut stream = device.create_stream(4, 30).expect("Failed to create stream");
     let frame = stream.next_frame().expect("Failed to capture frame");
 
     // Second vivid device should be configured with 100% Colorbar pattern
@@ -282,7 +282,7 @@ fn test_vivid_pixel_access() {
     let format = Format::new(640, 480, FourCC::YUYV);
     let format = device.set_format(&format).expect("Failed to set format");
 
-    let mut stream = device.create_stream(4).expect("Failed to create stream");
+    let mut stream = device.create_stream(4, 30).expect("Failed to create stream");
     let frame = stream.next_frame().expect("Failed to capture frame");
 
     // Test pixel access at various positions

@@ -204,8 +204,13 @@ pub trait CameraDevice {
     /// Set capture format. Returns the actual format set by the driver.
     fn set_format(&mut self, format: &Format) -> Result<Format>;
 
-    /// Create a capture stream with the specified number of buffers.
-    fn create_stream(&mut self, buffer_count: u32) -> Result<Self::Stream<'_>>;
+    /// Create a capture stream with the specified number of buffers and FPS.
+    ///
+    /// # Arguments
+    ///
+    /// * `buffer_count` - Number of mmap buffers (2-8 recommended)
+    /// * `fps` - Target frames per second
+    fn create_stream(&mut self, buffer_count: u32, fps: u32) -> Result<Self::Stream<'_>>;
 }
 
 /// Abstraction over capture stream operations.

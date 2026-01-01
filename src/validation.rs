@@ -241,7 +241,7 @@ mod tests {
         let format = Format::new(640, 480, FourCC::YUYV);
         device.set_format(&format).expect("set_format failed");
 
-        let stream = device.create_stream(1).expect("create_stream failed");
+        let stream = device.create_stream(1, 30).expect("create_stream failed");
         let mut stream = stream.with_pattern(TestPattern::ColorBars);
         let frame = stream.next_frame().expect("next_frame failed");
 
@@ -258,7 +258,7 @@ mod tests {
         let format = Format::new(640, 480, FourCC::YUYV);
         device.set_format(&format).expect("set_format failed");
 
-        let stream = device.create_stream(1).expect("create_stream failed");
+        let stream = device.create_stream(1, 30).expect("create_stream failed");
         let mut stream = stream.with_pattern(TestPattern::Gradient);
         let frame = stream.next_frame().expect("next_frame failed");
 
@@ -275,7 +275,7 @@ mod tests {
         let format = Format::new(640, 480, FourCC::YUYV);
         device.set_format(&format).expect("set_format failed");
 
-        let stream = device.create_stream(1).expect("create_stream failed");
+        let stream = device.create_stream(1, 30).expect("create_stream failed");
         let mut stream = stream.with_pattern(TestPattern::Gradient);
         let frame = stream.next_frame().expect("next_frame failed");
 
@@ -292,7 +292,7 @@ mod tests {
         let format = Format::new(640, 480, FourCC::YUYV);
         device.set_format(&format).expect("set_format failed");
 
-        let stream = device.create_stream(1).expect("create_stream failed");
+        let stream = device.create_stream(1, 30).expect("create_stream failed");
         let mut stream = stream.with_pattern(TestPattern::Solid(128, 128, 128));
         let frame = stream.next_frame().expect("next_frame failed");
 
@@ -306,7 +306,7 @@ mod tests {
     #[test]
     fn test_validate_frame_sequence_success() {
         let mut device = MockDevice::new();
-        let mut stream = device.create_stream(1).expect("create_stream failed");
+        let mut stream = device.create_stream(1, 30).expect("create_stream failed");
 
         let frames: Vec<Frame> = (0..5)
             .map(|_| stream.next_frame().expect("next_frame failed"))
@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn test_validate_frame_sequence_with_gap() {
         let mut device = MockDevice::new();
-        let mut stream = device.create_stream(1).expect("create_stream failed");
+        let mut stream = device.create_stream(1, 30).expect("create_stream failed");
 
         let mut frames = vec![
             stream.next_frame().expect("next_frame failed"),

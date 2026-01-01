@@ -67,7 +67,7 @@ impl CameraDevice for MockDevice {
         Ok(self.format.clone())
     }
 
-    fn create_stream(&mut self, _buffer_count: u32) -> Result<Self::Stream<'_>> {
+    fn create_stream(&mut self, _buffer_count: u32, _fps: u32) -> Result<Self::Stream<'_>> {
         Ok(MockStream {
             device: self,
             pattern: TestPattern::ColorBars,
@@ -231,7 +231,7 @@ mod tests {
     #[test]
     fn test_mock_stream_capture() {
         let mut device = MockDevice::new();
-        let mut stream = device.create_stream(4).expect("create_stream should succeed");
+        let mut stream = device.create_stream(4, 30).expect("create_stream should succeed");
 
         let frame1 = stream.next_frame().expect("next_frame should succeed");
         assert_eq!(frame1.metadata.sequence, 0);

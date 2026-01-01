@@ -6,6 +6,7 @@
 pub mod config;
 pub mod device;
 pub mod error;
+pub mod stream;
 pub mod traits;
 pub mod validation;
 
@@ -15,6 +16,7 @@ pub mod mock;
 pub use config::{CaptureConfig, CaptureConfigBuilder};
 pub use device::V4L2Device;
 pub use error::{CaptureError, ConfigError, DeviceError, Result, StreamError};
+pub use stream::V4L2Stream;
 pub use traits::{
     CameraDevice, CaptureStream, DeviceCapabilities, Format, FourCC, Frame, FrameMetadata,
 };

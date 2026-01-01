@@ -42,8 +42,8 @@ fn run() -> pi_cam_capture::Result<()> {
     );
     println!();
 
-    // Create stream with configured buffer count
-    let mut stream = device.create_stream(config.buffer_count)?;
+    // Create stream with configured buffer count and FPS
+    let mut stream = device.create_stream(config.buffer_count, config.fps)?;
 
     println!("Capturing frames (Ctrl+C to stop)...");
 

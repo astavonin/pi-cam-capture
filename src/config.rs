@@ -211,8 +211,10 @@ mod tests {
 
     #[test]
     fn test_invalid_buffer_count_too_low() {
-        let mut config = CaptureConfig::default();
-        config.buffer_count = 1;
+        let config = CaptureConfig {
+            buffer_count: 1,
+            ..Default::default()
+        };
 
         let result = config.validate();
         assert!(result.is_err());
@@ -224,8 +226,10 @@ mod tests {
 
     #[test]
     fn test_invalid_buffer_count_too_high() {
-        let mut config = CaptureConfig::default();
-        config.buffer_count = 9;
+        let config = CaptureConfig {
+            buffer_count: 9,
+            ..Default::default()
+        };
 
         let result = config.validate();
         assert!(result.is_err());
@@ -237,8 +241,10 @@ mod tests {
 
     #[test]
     fn test_invalid_fps_zero() {
-        let mut config = CaptureConfig::default();
-        config.fps = 0;
+        let config = CaptureConfig {
+            fps: 0,
+            ..Default::default()
+        };
 
         let result = config.validate();
         assert!(result.is_err());
@@ -250,8 +256,10 @@ mod tests {
 
     #[test]
     fn test_invalid_fps_too_high() {
-        let mut config = CaptureConfig::default();
-        config.fps = 121;
+        let config = CaptureConfig {
+            fps: 121,
+            ..Default::default()
+        };
 
         let result = config.validate();
         assert!(result.is_err());
@@ -263,8 +271,10 @@ mod tests {
 
     #[test]
     fn test_invalid_resolution_width_too_small() {
-        let mut config = CaptureConfig::default();
-        config.width = 159;
+        let config = CaptureConfig {
+            width: 159,
+            ..Default::default()
+        };
 
         let result = config.validate();
         assert!(result.is_err());
@@ -276,8 +286,10 @@ mod tests {
 
     #[test]
     fn test_invalid_resolution_width_too_large() {
-        let mut config = CaptureConfig::default();
-        config.width = 4097;
+        let config = CaptureConfig {
+            width: 4097,
+            ..Default::default()
+        };
 
         let result = config.validate();
         assert!(result.is_err());
@@ -289,8 +301,10 @@ mod tests {
 
     #[test]
     fn test_invalid_resolution_height_too_small() {
-        let mut config = CaptureConfig::default();
-        config.height = 119;
+        let config = CaptureConfig {
+            height: 119,
+            ..Default::default()
+        };
 
         let result = config.validate();
         assert!(result.is_err());
@@ -302,8 +316,10 @@ mod tests {
 
     #[test]
     fn test_invalid_resolution_height_too_large() {
-        let mut config = CaptureConfig::default();
-        config.height = 4097;
+        let config = CaptureConfig {
+            height: 4097,
+            ..Default::default()
+        };
 
         let result = config.validate();
         assert!(result.is_err());
