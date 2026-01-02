@@ -1,6 +1,6 @@
 //! Pi-cam-capture binary for testing camera capture.
 
-use pi_cam_capture::{CameraDevice, CaptureConfig, CaptureStream, Format, V4L2Device};
+use pi_cam_capture::{CaptureConfig, CaptureSession};
 
 fn main() {
     if let Err(err) = run() {
@@ -26,29 +26,29 @@ fn run() -> pi_cam_capture::Result<()> {
     println!("  Buffer count: {}", config.buffer_count);
     println!();
 
-    // Open device
-    let mut device = V4L2Device::open(config.device_index)?;
+    // Create capture session (opens device, sets format)
+    let mut session = CaptureSession::new(config)?;
 
-    println!("Device: {}", device.capabilities().card);
-    println!("Driver: {}", device.capabilities().driver);
-
-    // Set format from config
-    let format = Format::new(config.width, config.height, config.format);
-    let actual_format = device.set_format(&format)?;
-
+    println!("Device: {}", session.capabilities().card);
+    println!("Driver: {}", session.capabilities().driver);
     println!(
         "Format: {}x{} {:?}",
-        actual_format.width, actual_format.height, actual_format.fourcc
+        session.actual_format().width,
+        session.actual_format().height,
+        session.actual_format().fourcc
     );
     println!();
 
-    // Create stream with configured buffer count and FPS
-    let mut stream = device.create_stream(config.buffer_count, config.fps)?;
+    // Start streaming
+    session.start_stream()?;
 
-    println!("Capturing frames (Ctrl+C to stop)...");
+    println!(
+        "Streaming at {} FPS (Ctrl+C to stop)...",
+        session.actual_fps()
+    );
 
     loop {
-        let frame = stream.next_frame()?;
+        let frame = session.next_frame()?;
         println!(
             "Frame {}: {} bytes, timestamp: {:?}",
             frame.metadata.sequence,
