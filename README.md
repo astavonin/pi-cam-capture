@@ -96,16 +96,16 @@ fn main() -> pi_cam_capture::Result<()> {
     // Create session - opens device and sets format
     let mut session = CaptureSession::new(config)?;
 
-    // Start streaming
-    session.start_stream()?;
+    // Start streaming — returns a guard that borrows the session.
+    // While the guard exists, the session cannot be reconfigured (compile-time guarantee).
+    let mut stream = session.streaming()?;
 
-    // Capture frames
+    // Capture frames — the guard efficiently reuses mmap buffers across calls.
     for _ in 0..10 {
-        let frame = session.next_frame()?;
-        println!("Frame {}: {} bytes",
-            frame.metadata.sequence,
-            frame.data.len());
+        let frame = stream.next_frame()?;
+        println!("Frame {}: {} bytes", frame.metadata.sequence, frame.data.len());
     }
+    // Guard dropped here: streaming stops, buffers released automatically.
 
     Ok(())
 }
@@ -125,10 +125,12 @@ let config = CaptureConfig::builder()
     .build()?;
 
 let mut session = CaptureSession::new(config)?;
-session.start_stream()?;
+
+// Start streaming — guard pattern ensures clean resource lifecycle
+let mut stream = session.streaming()?;
 
 // Capture a frame
-let frame = session.next_frame()?;
+let frame = stream.next_frame()?;
 ```
 
 ### Examples

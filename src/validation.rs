@@ -6,6 +6,7 @@
 use crate::error::{Result, StreamError};
 use crate::traits::{Format, Frame};
 
+// Expected RGB after BT.601 YUV→RGB conversion of SMPTE EG 1-1990 color bar values
 /// Expected RGB values for SMPTE color bars (8 bars).
 ///
 /// These are the RGB values resulting from converting the YUV values
@@ -24,7 +25,7 @@ const SMPTE_COLOR_BARS: [(u8, u8, u8); 8] = [
 ];
 
 /// Tolerance for RGB color matching (accounts for YUV->RGB conversion errors).
-const COLOR_TOLERANCE: i32 = 15;
+const COLOR_TOLERANCE: u8 = 15;
 
 /// Validates that a frame contains the SMPTE color bar pattern.
 ///
@@ -158,6 +159,7 @@ pub fn validate_gradient(frame: &Frame, format: &Format) -> Result<()> {
 /// Validates that a sequence of frames has incrementing sequence numbers.
 ///
 /// This function checks that frame sequence numbers increment by 1 with no gaps.
+/// Wrap-around from `u32::MAX` to `0` is treated as a valid continuation.
 ///
 /// # Arguments
 ///
@@ -172,7 +174,7 @@ pub fn validate_gradient(frame: &Frame, format: &Format) -> Result<()> {
 ///
 /// Returns `StreamError` if:
 /// - The frames slice is empty
-/// - Any sequence number doesn't increment by exactly 1 from the previous
+/// - Any sequence number doesn't increment by exactly 1 from the previous (wrapping)
 pub fn validate_frame_sequence(frames: &[Frame]) -> Result<()> {
     if frames.is_empty() {
         return Err(StreamError::CaptureFailed(
@@ -181,21 +183,20 @@ pub fn validate_frame_sequence(frames: &[Frame]) -> Result<()> {
         .into());
     }
 
-    for i in 1..frames.len() {
-        let prev_frame = frames.get(i - 1).ok_or_else(|| {
-            StreamError::CaptureFailed(format!("Failed to get frame at index {}", i - 1))
-        })?;
-        let curr_frame = frames.get(i).ok_or_else(|| {
-            StreamError::CaptureFailed(format!("Failed to get frame at index {i}"))
-        })?;
-
-        let prev_seq = prev_frame.metadata.sequence;
-        let curr_seq = curr_frame.metadata.sequence;
-
-        if curr_seq != prev_seq + 1 {
+    for window in frames.windows(2) {
+        // windows(2) guarantees exactly 2 elements; use first()/last() to avoid index lints
+        let (prev_seq, curr_seq) = window
+            .first()
+            .zip(window.last())
+            .map(|(a, b)| (a.metadata.sequence, b.metadata.sequence))
+            .ok_or_else(|| {
+                StreamError::CaptureFailed("windows(2) returned a short slice".to_owned())
+            })?;
+        // Use wrapping_add to handle u32::MAX → 0 wrap-around on long-running streams
+        if curr_seq != prev_seq.wrapping_add(1) {
             return Err(StreamError::CaptureFailed(format!(
-                "Frame sequence gap at index {i}: expected {}, got {curr_seq}",
-                prev_seq + 1
+                "Frame sequence gap: expected {}, got {curr_seq}",
+                prev_seq.wrapping_add(1)
             ))
             .into());
         }
@@ -215,18 +216,10 @@ pub fn validate_frame_sequence(frames: &[Frame]) -> Result<()> {
 /// # Returns
 ///
 /// `true` if all three channels are within tolerance, `false` otherwise
-fn colors_match(actual: (u8, u8, u8), expected: (u8, u8, u8), tolerance: i32) -> bool {
-    let (ar, ag, ab) = actual;
-    let (er, eg, eb) = expected;
-
-    let r_diff = i32::from(ar).abs_diff(i32::from(er));
-    let g_diff = i32::from(ag).abs_diff(i32::from(eg));
-    let b_diff = i32::from(ab).abs_diff(i32::from(eb));
-
-    #[allow(clippy::cast_sign_loss)]
-    let tol = tolerance as u32;
-
-    r_diff <= tol && g_diff <= tol && b_diff <= tol
+const fn colors_match(actual: (u8, u8, u8), expected: (u8, u8, u8), tolerance: u8) -> bool {
+    actual.0.abs_diff(expected.0) <= tolerance
+        && actual.1.abs_diff(expected.1) <= tolerance
+        && actual.2.abs_diff(expected.2) <= tolerance
 }
 
 #[cfg(test)]
@@ -364,5 +357,48 @@ mod tests {
     #[test]
     fn test_colors_match_outside_tolerance() {
         assert!(!colors_match((100, 150, 200), (120, 150, 200), 10));
+    }
+
+    #[test]
+    fn test_validate_frame_sequence_single_frame() {
+        let mut device = MockDevice::new();
+        let mut stream = device.create_stream(1, 30).expect("create_stream failed");
+        let frames = vec![stream.next_frame().expect("next_frame failed")];
+        // Single frame is always valid
+        assert!(validate_frame_sequence(&frames).is_ok());
+    }
+
+    #[test]
+    fn test_validate_frame_sequence_wraparound() {
+        // u32::MAX → 0 is a valid wrap-around, not a gap
+        use crate::traits::FrameMetadata;
+        let make = |seq: u32| Frame {
+            data: vec![],
+            metadata: FrameMetadata {
+                sequence: seq,
+                timestamp: std::time::Duration::ZERO,
+                bytes_used: 0,
+            },
+        };
+        let frames = vec![make(u32::MAX), make(0)];
+        assert!(
+            validate_frame_sequence(&frames).is_ok(),
+            "u32::MAX → 0 wrap should be treated as valid"
+        );
+    }
+
+    #[test]
+    fn test_validate_frame_sequence_non_wraparound_gap() {
+        use crate::traits::FrameMetadata;
+        let make = |seq: u32| Frame {
+            data: vec![],
+            metadata: FrameMetadata {
+                sequence: seq,
+                timestamp: std::time::Duration::ZERO,
+                bytes_used: 0,
+            },
+        };
+        let frames = vec![make(5), make(7)]; // gap: expected 6, got 7
+        assert!(validate_frame_sequence(&frames).is_err());
     }
 }

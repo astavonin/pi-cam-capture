@@ -4,13 +4,13 @@ use crate::error::Result;
 use crate::traits::{
     CameraDevice, CaptureStream, DeviceCapabilities, Format, FourCC, Frame, FrameMetadata,
 };
-use std::time::Duration;
 
 /// Mock device for testing without hardware.
 pub struct MockDevice {
     capabilities: DeviceCapabilities,
     format: Format,
-    frame_count: u32,
+    /// Monotonically increasing frame counter shared across streams from this device.
+    pub(crate) frame_count: u32,
 }
 
 impl Default for MockDevice {
@@ -38,7 +38,7 @@ impl MockDevice {
 
     /// Set the format for this mock device.
     #[must_use]
-    pub fn with_format(mut self, format: Format) -> Self {
+    pub const fn with_format(mut self, format: Format) -> Self {
         self.format = format;
         self
     }
@@ -67,10 +67,12 @@ impl CameraDevice for MockDevice {
         Ok(self.format.clone())
     }
 
-    fn create_stream(&mut self, _buffer_count: u32, _fps: u32) -> Result<Self::Stream<'_>> {
+    fn create_stream(&mut self, buffer_count: u32, fps: u32) -> Result<Self::Stream<'_>> {
         Ok(MockStream {
             device: self,
             pattern: TestPattern::ColorBars,
+            fps,
+            buffer_count,
         })
     }
 }
@@ -90,18 +92,45 @@ pub enum TestPattern {
 pub struct MockStream<'a> {
     device: &'a mut MockDevice,
     pattern: TestPattern,
+    fps: u32,
+    buffer_count: u32,
 }
 
 impl MockStream<'_> {
     /// Set the test pattern for frame generation.
     #[must_use]
-    pub fn with_pattern(mut self, pattern: TestPattern) -> Self {
+    pub const fn with_pattern(mut self, pattern: TestPattern) -> Self {
         self.pattern = pattern;
         self
+    }
+
+    /// Returns the fps this stream was created with.
+    #[must_use]
+    pub const fn fps(&self) -> u32 {
+        self.fps
+    }
+
+    /// Returns the `buffer_count` this stream was created with.
+    #[must_use]
+    pub const fn buffer_count(&self) -> u32 {
+        self.buffer_count
+    }
+
+    /// Returns the actual fps (same as requested — mock always honours the request).
+    // same_name_method: intentional — this const inherent method avoids requiring callers
+    // to import the CaptureStream trait for a simple FPS query.
+    #[must_use]
+    #[allow(clippy::same_name_method)]
+    pub const fn actual_fps(&self) -> u32 {
+        self.fps
     }
 }
 
 impl CaptureStream for MockStream<'_> {
+    fn actual_fps(&self) -> u32 {
+        self.fps
+    }
+
     fn next_frame(&mut self) -> Result<Frame> {
         let format = &self.device.format;
         let data = generate_test_frame(format, self.pattern);
@@ -109,11 +138,17 @@ impl CaptureStream for MockStream<'_> {
         let seq = self.device.frame_count;
         self.device.frame_count += 1;
 
+        let millis_per_frame = if self.fps > 0 {
+            1000 / u64::from(self.fps)
+        } else {
+            33 // fallback: ~30 fps
+        };
+
         Ok(Frame {
             data,
             metadata: FrameMetadata {
                 sequence: seq,
-                timestamp: Duration::from_millis(u64::from(seq) * 33), // ~30fps
+                timestamp: std::time::Duration::from_millis(u64::from(seq) * millis_per_frame),
                 bytes_used: format.size,
             },
         })
@@ -121,7 +156,7 @@ impl CaptureStream for MockStream<'_> {
 }
 
 /// Generate test frame data based on pattern.
-fn generate_test_frame(format: &Format, pattern: TestPattern) -> Vec<u8> {
+pub(crate) fn generate_test_frame(format: &Format, pattern: TestPattern) -> Vec<u8> {
     let size = (format.width * format.height * 2) as usize; // YUYV = 2 bytes/pixel
     let mut data = vec![0u8; size];
 
@@ -140,10 +175,17 @@ fn generate_test_frame(format: &Format, pattern: TestPattern) -> Vec<u8> {
     data
 }
 
+/// Write a YUYV pixel pair `[Y0, U, Y1, V]` at `offset` in `data`, if in bounds.
+fn write_yuyv(data: &mut [u8], offset: usize, y0: u8, u: u8, y1: u8, v: u8) {
+    if let Some(chunk) = data.get_mut(offset..offset + 4) {
+        chunk.copy_from_slice(&[y0, u, y1, v]);
+    }
+}
+
 /// Generate YUYV color bars pattern.
 fn generate_color_bars(data: &mut [u8], width: u32, height: u32) {
+    // SMPTE EG 1-1990 100% color bar YUV values (YUYV packed)
     // 8 color bars: White, Yellow, Cyan, Green, Magenta, Red, Blue, Black
-    // YUYV values for each bar
     let bars: [(u8, u8, u8); 8] = [
         (235, 128, 128), // White
         (210, 16, 146),  // Yellow
@@ -155,20 +197,16 @@ fn generate_color_bars(data: &mut [u8], width: u32, height: u32) {
         (16, 128, 128),  // Black
     ];
 
-    let bar_width = width / 8;
+    // Guard: width < 8 maps all pixels to bar 0 instead of dividing by zero
+    let bar_width = (width / 8).max(1);
 
     for y in 0..height {
         for x in (0..width).step_by(2) {
             let bar_idx = (x / bar_width).min(7) as usize;
-            let (y_val, u_val, v_val) = bars[bar_idx];
-
+            // bars has exactly 8 elements; bar_idx is clamped to 0..=7
+            let (y_val, u_val, v_val) = bars.get(bar_idx).copied().unwrap_or((16, 128, 128));
             let offset = ((y * width + x) * 2) as usize;
-            if offset + 3 < data.len() {
-                data[offset] = y_val;     // Y0
-                data[offset + 1] = u_val; // U
-                data[offset + 2] = y_val; // Y1
-                data[offset + 3] = v_val; // V
-            }
+            write_yuyv(data, offset, y_val, u_val, y_val, v_val);
         }
     }
 }
@@ -180,26 +218,15 @@ fn generate_gradient(data: &mut [u8], width: u32, height: u32) {
             #[allow(clippy::cast_possible_truncation)]
             let y_val = ((x * 255) / width) as u8;
             let offset = ((y * width + x) * 2) as usize;
-
-            if offset + 3 < data.len() {
-                data[offset] = y_val;     // Y0
-                data[offset + 1] = 128;   // U (neutral)
-                data[offset + 2] = y_val; // Y1
-                data[offset + 3] = 128;   // V (neutral)
-            }
+            write_yuyv(data, offset, y_val, 128, y_val, 128);
         }
     }
 }
 
 /// Generate solid color YUYV frame.
 fn generate_solid(data: &mut [u8], y: u8, u: u8, v: u8) {
-    for i in (0..data.len()).step_by(4) {
-        if i + 3 < data.len() {
-            data[i] = y;     // Y0
-            data[i + 1] = u; // U
-            data[i + 2] = y; // Y1
-            data[i + 3] = v; // V
-        }
+    for chunk in data.chunks_exact_mut(4) {
+        chunk.copy_from_slice(&[y, u, y, v]);
     }
 }
 
@@ -279,5 +306,32 @@ mod tests {
         // U should be 64, V should be 192
         assert_eq!(data[1], 64);
         assert_eq!(data[3], 192);
+    }
+
+    #[test]
+    fn test_mock_stream_fps_timestamp() {
+        let mut device = MockDevice::new();
+        let mut stream = device.create_stream(4, 60).expect("create_stream failed");
+        let f1 = stream.next_frame().expect("next_frame failed");
+        let f2 = stream.next_frame().expect("next_frame failed");
+        // 60 FPS → ~16ms per frame
+        let delta = f2.metadata.timestamp - f1.metadata.timestamp;
+        assert_eq!(delta.as_millis(), 1000 / 60);
+    }
+
+    #[test]
+    fn test_mock_stream_buffer_count_accessible() {
+        let mut device = MockDevice::new();
+        let stream = device.create_stream(8, 30).expect("create_stream failed");
+        assert_eq!(stream.buffer_count(), 8);
+        assert_eq!(stream.fps(), 30);
+    }
+
+    #[test]
+    fn test_color_bars_narrow_frame() {
+        // width=4 < 8 — must not panic (bar_width would be 0 without the guard)
+        let format = Format::new(4, 4, FourCC::YUYV);
+        let data = generate_test_frame(&format, TestPattern::ColorBars);
+        assert_eq!(data.len(), (4 * 4 * 2) as usize);
     }
 }

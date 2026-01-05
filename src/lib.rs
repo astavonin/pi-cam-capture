@@ -17,9 +17,12 @@
 //!
 //! let mut session = CaptureSession::new(config)?;
 //!
+//! // Create streaming guard - efficient buffer reuse
+//! let mut stream = session.streaming()?;
+//!
 //! // Capture frames
 //! for _ in 0..10 {
-//!     let frame = session.next_frame()?;
+//!     let frame = stream.next_frame()?;
 //!     println!("Frame {}: {} bytes", frame.metadata.sequence, frame.data.len());
 //! }
 //! # Ok(())
@@ -34,15 +37,19 @@ pub mod stream;
 pub mod traits;
 pub mod validation;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "mock"))]
 pub mod mock;
+
+#[cfg(any(test, feature = "mock"))]
+pub use mock::{MockDevice, MockStream, TestPattern};
 
 pub use config::{CaptureConfig, CaptureConfigBuilder};
 pub use device::V4L2Device;
 pub use error::{CaptureError, ConfigError, DeviceError, Result, StreamError};
-pub use session::CaptureSession;
+pub use session::{CaptureSession, CaptureStream};
 pub use stream::V4L2Stream;
 pub use traits::{
-    CameraDevice, CaptureStream, DeviceCapabilities, Format, FourCC, Frame, FrameMetadata,
+    CameraDevice, CaptureStream as CaptureStreamTrait, DeviceCapabilities, Format, FourCC, Frame,
+    FrameMetadata, FrameRef,
 };
 pub use validation::{validate_color_bars, validate_frame_sequence, validate_gradient};

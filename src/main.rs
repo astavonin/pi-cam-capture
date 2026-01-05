@@ -19,11 +19,11 @@ fn run() -> pi_cam_capture::Result<()> {
         .build()?;
 
     println!("Configuration:");
-    println!("  Device: /dev/video{}", config.device_index);
-    println!("  Resolution: {}x{}", config.width, config.height);
-    println!("  Format: {:?}", config.format);
-    println!("  Target FPS: {}", config.fps);
-    println!("  Buffer count: {}", config.buffer_count);
+    println!("  Device: /dev/video{}", config.device_index());
+    println!("  Resolution: {}x{}", config.width(), config.height());
+    println!("  Format: {:?}", config.format());
+    println!("  Target FPS: {}", config.fps());
+    println!("  Buffer count: {}", config.buffer_count());
     println!();
 
     // Create capture session (opens device, sets format)
@@ -39,16 +39,17 @@ fn run() -> pi_cam_capture::Result<()> {
     );
     println!();
 
-    // Start streaming
-    session.start_stream()?;
+    // Create streaming guard (starts streaming, allocates buffers)
+    let mut stream = session.streaming()?;
 
     println!(
         "Streaming at {} FPS (Ctrl+C to stop)...",
-        session.actual_fps()
+        stream.actual_fps()
     );
+    println!();
 
     loop {
-        let frame = session.next_frame()?;
+        let frame = stream.next_frame()?;
         println!(
             "Frame {}: {} bytes, timestamp: {:?}",
             frame.metadata.sequence,

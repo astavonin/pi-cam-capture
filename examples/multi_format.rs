@@ -53,16 +53,16 @@ fn test_config(width: u32, height: u32, fps: u32) -> pi_cam_capture::Result<()> 
         session.actual_format().width,
         session.actual_format().height,
         session.actual_format().fourcc,
-        session.config().fps
+        session.config().fps()
     );
 
-    // Start streaming to get actual FPS
-    session.start_stream()?;
+    // Create streaming guard to get actual FPS
+    let mut stream = session.streaming()?;
 
-    println!("Streaming: {} FPS (driver negotiated)", session.actual_fps());
+    println!("Streaming: {} FPS (driver negotiated)", stream.actual_fps());
 
     // Capture a test frame
-    let frame = session.next_frame()?;
+    let frame = stream.next_frame()?;
     println!(
         "Frame:     {} bytes, seq={}",
         frame.data.len(),

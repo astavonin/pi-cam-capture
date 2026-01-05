@@ -17,9 +17,9 @@
 //!
 //! // Or use the default configuration
 //! let default_config = CaptureConfig::default();
-//! assert_eq!(default_config.width, 1920);
-//! assert_eq!(default_config.height, 1080);
-//! assert_eq!(default_config.fps, 30);
+//! assert_eq!(default_config.width(), 1920);
+//! assert_eq!(default_config.height(), 1080);
+//! assert_eq!(default_config.fps(), 30);
 //! ```
 
 use crate::error::{ConfigError, Result};
@@ -29,25 +29,61 @@ use crate::traits::FourCC;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureConfig {
     /// Device index (e.g., 0 for /dev/video0).
-    pub device_index: u32,
+    pub(crate) device_index: u32,
 
     /// Frame width in pixels.
-    pub width: u32,
+    pub(crate) width: u32,
 
     /// Frame height in pixels.
-    pub height: u32,
+    pub(crate) height: u32,
 
     /// Pixel format.
-    pub format: FourCC,
+    pub(crate) format: FourCC,
 
     /// Target frames per second.
-    pub fps: u32,
+    pub(crate) fps: u32,
 
     /// Number of mmap buffers (2-8 recommended).
-    pub buffer_count: u32,
+    pub(crate) buffer_count: u32,
 }
 
 impl CaptureConfig {
+    /// Device index (e.g., 0 for /dev/video0).
+    #[must_use]
+    pub const fn device_index(&self) -> u32 {
+        self.device_index
+    }
+
+    /// Frame width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Frame height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Pixel format.
+    #[must_use]
+    pub const fn format(&self) -> FourCC {
+        self.format
+    }
+
+    /// Target frames per second.
+    #[must_use]
+    pub const fn fps(&self) -> u32 {
+        self.fps
+    }
+
+    /// Number of mmap buffers.
+    #[must_use]
+    pub const fn buffer_count(&self) -> u32 {
+        self.buffer_count
+    }
+
     /// Create a new builder for `CaptureConfig`.
     #[must_use]
     pub fn builder() -> CaptureConfigBuilder {
@@ -202,11 +238,11 @@ mod tests {
             .build()
             .unwrap();
 
-        assert_eq!(config.device_index, 1);
-        assert_eq!(config.width, 1280);
-        assert_eq!(config.height, 720);
-        assert_eq!(config.fps, 60);
-        assert_eq!(config.buffer_count, 8);
+        assert_eq!(config.device_index(), 1);
+        assert_eq!(config.width(), 1280);
+        assert_eq!(config.height(), 720);
+        assert_eq!(config.fps(), 60);
+        assert_eq!(config.buffer_count(), 8);
     }
 
     #[test]
@@ -352,5 +388,22 @@ mod tests {
     fn test_builder_fails_on_invalid() {
         let result = CaptureConfig::builder().buffer_count(1).build();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_config_invalid_buffer_count_bypasses_builder() {
+        // struct literal bypasses builder but validate() must still catch it
+        let config = CaptureConfig {
+            buffer_count: 0,
+            device_index: 0,
+            width: 1920,
+            height: 1080,
+            format: FourCC::YUYV,
+            fps: 30,
+        };
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            crate::error::CaptureError::Config(ConfigError::InvalidBufferCount(0))
+        ));
     }
 }

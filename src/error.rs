@@ -97,10 +97,7 @@ pub enum StreamError {
     /// Failed to get format.
     #[error("Failed to get format: {0}")]
     GetFormatFailed(String),
-
-    /// I/O error.
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
+    // Io variant removed — use CaptureError::Io instead to avoid ambiguity
 }
 
 /// Result type for camera operations.

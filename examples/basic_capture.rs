@@ -23,7 +23,7 @@ fn run() -> pi_cam_capture::Result<()> {
     // Use default configuration (1920x1080 YUYV at 30 FPS)
     let config = CaptureConfig::default();
 
-    println!("Opening camera /dev/video{}...", config.device_index);
+    println!("Opening camera /dev/video{}...", config.device_index());
 
     // Create session - opens device and sets format
     let mut session = CaptureSession::new(config)?;
@@ -37,19 +37,17 @@ fn run() -> pi_cam_capture::Result<()> {
         session.actual_format().height,
         session.actual_format().fourcc
     );
+    println!();
 
-    // Start streaming
-    session.start_stream()?;
+    // Create streaming guard - starts streaming, allocates buffers
+    let mut stream = session.streaming()?;
 
-    println!(
-        "Streaming at {} FPS",
-        session.actual_fps()
-    );
+    println!("Streaming at {} FPS", stream.actual_fps());
     println!("Press Ctrl+C to stop\n");
 
-    // Capture and display 10 frames
+    // Capture and display 10 frames - stream persists, efficient
     for i in 1..=10 {
-        let frame = session.next_frame()?;
+        let frame = stream.next_frame()?;
         println!(
             "Frame {}: seq={}, size={} bytes, ts={:?}",
             i,

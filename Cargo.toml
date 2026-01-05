@@ -7,6 +7,8 @@ edition = "2021"
 default = []
 # Enable integration tests requiring virtual cameras (vivid)
 integration = []
+# Expose mock device for external test harnesses
+mock = []
 
 [dependencies]
 v4l = "0.14"

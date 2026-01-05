@@ -42,18 +42,25 @@ fn run() -> pi_cam_capture::Result<()> {
         session.actual_format().fourcc
     );
 
-    // Start streaming
-    session.start_stream()?;
+    // Get format info before streaming (while session is accessible)
+    let width = session.actual_format().width;
+    let height = session.actual_format().height;
+
+    // Create streaming guard
+    let mut stream = session.streaming()?;
 
     // Skip first few frames (camera warmup)
     println!("Warming up camera...");
     for _ in 0..5 {
-        session.next_frame()?;
+        stream.next_frame()?;
     }
 
     // Capture the frame
     println!("Capturing frame...");
-    let frame = session.next_frame()?;
+    let frame = stream.next_frame()?;
+
+    // Drop stream before file I/O (releases resources)
+    drop(stream);
 
     // Save to file
     println!("Saving to {output_file}...");
@@ -68,8 +75,6 @@ fn run() -> pi_cam_capture::Result<()> {
     println!("Frame info: seq={seq}, ts={ts:?}");
 
     println!("\nConvert to PNG with:");
-    let width = session.actual_format().width;
-    let height = session.actual_format().height;
     println!("  ffmpeg -f rawvideo -pixel_format yuyv422 -video_size {width}x{height} \\");
     println!("    -i {output_file} frame.png");
 
