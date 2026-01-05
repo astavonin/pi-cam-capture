@@ -75,6 +75,77 @@ cargo fix
 cargo run
 ```
 
+## Usage
+
+### Quick Start
+
+Add to your `Cargo.toml`:
+```toml
+[dependencies]
+pi-cam-capture = "0.1"
+```
+
+Basic capture example:
+```rust
+use pi_cam_capture::{CaptureConfig, CaptureSession};
+
+fn main() -> pi_cam_capture::Result<()> {
+    // Use default configuration (1920x1080 YUYV at 30 FPS)
+    let config = CaptureConfig::default();
+
+    // Create session - opens device and sets format
+    let mut session = CaptureSession::new(config)?;
+
+    // Start streaming
+    session.start_stream()?;
+
+    // Capture frames
+    for _ in 0..10 {
+        let frame = session.next_frame()?;
+        println!("Frame {}: {} bytes",
+            frame.metadata.sequence,
+            frame.data.len());
+    }
+
+    Ok(())
+}
+```
+
+### Custom Configuration
+
+```rust
+use pi_cam_capture::{CaptureConfig, CaptureSession, FourCC};
+
+let config = CaptureConfig::builder()
+    .device(0)                    // /dev/video0
+    .resolution(1280, 720)        // 720p
+    .format(FourCC::YUYV)         // Pixel format
+    .fps(60)                      // Target FPS
+    .buffer_count(4)              // Number of buffers
+    .build()?;
+
+let mut session = CaptureSession::new(config)?;
+session.start_stream()?;
+
+// Capture a frame
+let frame = session.next_frame()?;
+```
+
+### Examples
+
+See the `examples/` directory for more:
+
+```bash
+# Basic capture - capture and display frame info
+cargo run --example basic_capture
+
+# Save frame - capture and save raw YUYV data
+cargo run --example save_frame frame.yuyv
+
+# Multi-format - test different resolutions and FPS
+cargo run --example multi_format
+```
+
 ## Supported Cameras
 
 - Raspberry Pi Camera Module 3 (IMX708 sensor)

@@ -16,6 +16,10 @@ pub enum CaptureError {
     /// Stream-related error.
     #[error("Stream error: {0}")]
     Stream(#[from] StreamError),
+
+    /// I/O error.
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 /// Device operation errors.
