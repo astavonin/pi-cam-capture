@@ -165,7 +165,8 @@ impl Frame {
 /// avoiding a per-frame allocation. The borrow keeps the buffer locked until
 /// this value is dropped, after which the next frame can be captured.
 ///
-/// Obtain via [`V4L2Stream::next_frame_borrowed`](crate::stream::V4L2Stream::next_frame_borrowed).
+/// Obtain via [`CaptureStream::next_frame_ref`](crate::session::CaptureStream::next_frame_ref)
+/// when the underlying stream supports borrowed frame access.
 #[derive(Debug)]
 pub struct FrameRef<'a> {
     /// Raw frame data borrowed from the mmap buffer.
@@ -249,6 +250,15 @@ pub trait CaptureStream {
 
     /// Returns the actual FPS negotiated with the driver (or requested FPS for mock devices).
     fn actual_fps(&self) -> u32;
+}
+
+/// Capability for streams that can return a borrowed frame view.
+///
+/// The returned [`FrameRef`] borrows from `self`, so callers cannot request
+/// another frame while the borrowed view is still alive.
+pub trait BorrowedCaptureStream {
+    /// Captures the next frame as a borrowed view of stream-owned storage.
+    fn next_frame_ref(&mut self) -> Result<FrameRef<'_>>;
 }
 
 #[cfg(test)]

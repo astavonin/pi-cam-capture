@@ -9,6 +9,7 @@
 //! - Device 1: Gray Ramp pattern (gradient) - `test_pattern=20`
 //! - Device 2: 100% Colorbar pattern - `test_pattern=1`
 //! - Format: 640x480 YUYV
+//! - Frame rate: 30 FPS
 //!
 //! Tests will fail if vivid is not available or not configured correctly.
 
@@ -17,9 +18,11 @@
 use pi_cam_capture::device::V4L2Device;
 use pi_cam_capture::traits::{CameraDevice, CaptureStream, Format, FourCC};
 use pi_cam_capture::validation::{validate_color_bars, validate_frame_sequence, validate_gradient};
+use pi_cam_capture::{CaptureConfig, CaptureSession};
 use serial_test::serial;
 use std::fs;
 use std::path::Path;
+use std::time::Instant;
 
 /// Find all available vivid virtual camera devices.
 ///
@@ -138,12 +141,16 @@ fn test_vivid_set_format() {
 
     // Request a specific format
     let requested = Format::new(640, 480, FourCC::YUYV);
-    let actual = device
-        .set_format(&requested)
-        .expect("Failed to set format");
+    let actual = device.set_format(&requested).expect("Failed to set format");
 
-    println!("Requested: {}x{} {:?}", requested.width, requested.height, requested.fourcc);
-    println!("Actual: {}x{} {:?}", actual.width, actual.height, actual.fourcc);
+    println!(
+        "Requested: {}x{} {:?}",
+        requested.width, requested.height, requested.fourcc
+    );
+    println!(
+        "Actual: {}x{} {:?}",
+        actual.width, actual.height, actual.fourcc
+    );
 
     // vivid should accept common formats
     assert_eq!(actual.width, 640, "Width mismatch");
@@ -162,7 +169,9 @@ fn test_vivid_capture_single_frame() {
     let format = device.set_format(&format).expect("Failed to set format");
 
     // Create stream and capture a frame
-    let mut stream = device.create_stream(4, 30).expect("Failed to create stream");
+    let mut stream = device
+        .create_stream(4, 30)
+        .expect("Failed to create stream");
     let frame = stream.next_frame().expect("Failed to capture frame");
 
     println!("Captured frame:");
@@ -179,7 +188,10 @@ fn test_vivid_capture_single_frame() {
         frame.data.len(),
         expected_size
     );
-    assert!(frame.metadata.bytes_used > 0, "Bytes used should be positive");
+    assert!(
+        frame.metadata.bytes_used > 0,
+        "Bytes used should be positive"
+    );
 }
 
 #[test]
@@ -192,7 +204,9 @@ fn test_vivid_capture_multiple_frames() {
     let format = Format::new(640, 480, FourCC::YUYV);
     device.set_format(&format).expect("Failed to set format");
 
-    let mut stream = device.create_stream(4, 30).expect("Failed to create stream");
+    let mut stream = device
+        .create_stream(4, 30)
+        .expect("Failed to create stream");
 
     // Capture multiple frames
     let frame_count = 10;
@@ -218,6 +232,79 @@ fn test_vivid_capture_multiple_frames() {
 
 #[test]
 #[serial]
+fn test_vivid_fps_stability() {
+    const FRAME_COUNT: usize = 300;
+    const MIN_MEAN_MS: f64 = 31.67;
+    const MAX_MEAN_MS: f64 = 35.00;
+    const MAX_STD_DEV_MS: f64 = 3.0;
+
+    let device_index = require_vivid!();
+    let config = CaptureConfig::builder()
+        .device(device_index)
+        .resolution(640, 480)
+        .format(FourCC::YUYV)
+        .fps(30)
+        .buffer_count(4)
+        .build()
+        .expect("vivid capture config should be valid");
+
+    let mut session = CaptureSession::new(config).expect("Failed to create vivid session");
+    let mut stream = session.streaming().expect("Failed to create vivid stream");
+    let mut call_starts = Vec::with_capacity(FRAME_COUNT);
+
+    for _ in 0..FRAME_COUNT {
+        call_starts.push(Instant::now());
+        let frame = stream
+            .next_frame_ref()
+            .expect("Failed to capture borrowed frame");
+        assert!(
+            frame.metadata.bytes_used > 0,
+            "Bytes used should be positive"
+        );
+    }
+
+    // windows(2) always yields exactly 2-element slices; map with direct indexing is correct
+    let intervals_ms: Vec<f64> = call_starts
+        .windows(2)
+        .map(|w| w[1].duration_since(w[0]).as_secs_f64() * 1000.0)
+        .collect();
+
+    assert_eq!(intervals_ms.len(), FRAME_COUNT - 1);
+
+    // Compute denominator from actual slice length to stay in sync if FRAME_COUNT changes
+    let n = intervals_ms.len() as f64;
+    let mean_ms = intervals_ms.iter().sum::<f64>() / n;
+    let variance_ms = intervals_ms
+        .iter()
+        .map(|interval_ms| {
+            let delta = interval_ms - mean_ms;
+            delta * delta
+        })
+        .sum::<f64>()
+        / n;
+    let std_dev_ms = variance_ms.sqrt();
+
+    let min_ms = intervals_ms.iter().copied().fold(f64::INFINITY, f64::min);
+    let max_ms = intervals_ms
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let actual_fps = stream.actual_fps();
+
+    assert!(
+        (MIN_MEAN_MS..=MAX_MEAN_MS).contains(&mean_ms),
+        "Mean {mean_ms:.2} ms outside [{MIN_MEAN_MS:.2}, {MAX_MEAN_MS:.2}] ms \
+         (actual_fps={actual_fps}, min={min_ms:.2}ms, max={max_ms:.2}ms, σ={std_dev_ms:.2}ms)"
+    );
+    assert!(
+        std_dev_ms < MAX_STD_DEV_MS,
+        "σ {std_dev_ms:.2} ms >= {MAX_STD_DEV_MS:.2} ms \
+         (actual_fps={actual_fps}, mean={mean_ms:.2}ms, min={min_ms:.2}ms, max={max_ms:.2}ms)"
+    );
+}
+
+#[test]
+#[serial]
 fn test_vivid_gradient_pattern() {
     let (gradient_device, _) = require_vivid_pair!();
 
@@ -227,7 +314,9 @@ fn test_vivid_gradient_pattern() {
     let format = Format::new(640, 480, FourCC::YUYV);
     let format = device.set_format(&format).expect("Failed to set format");
 
-    let mut stream = device.create_stream(4, 30).expect("Failed to create stream");
+    let mut stream = device
+        .create_stream(4, 30)
+        .expect("Failed to create stream");
     let frame = stream.next_frame().expect("Failed to capture frame");
 
     // First vivid device should be configured with Gray Ramp (gradient) pattern
@@ -255,7 +344,9 @@ fn test_vivid_colorbar_pattern() {
     let format = Format::new(640, 480, FourCC::YUYV);
     let format = device.set_format(&format).expect("Failed to set format");
 
-    let mut stream = device.create_stream(4, 30).expect("Failed to create stream");
+    let mut stream = device
+        .create_stream(4, 30)
+        .expect("Failed to create stream");
     let frame = stream.next_frame().expect("Failed to capture frame");
 
     // Second vivid device should be configured with 100% Colorbar pattern
@@ -282,7 +373,9 @@ fn test_vivid_pixel_access() {
     let format = Format::new(640, 480, FourCC::YUYV);
     let format = device.set_format(&format).expect("Failed to set format");
 
-    let mut stream = device.create_stream(4, 30).expect("Failed to create stream");
+    let mut stream = device
+        .create_stream(4, 30)
+        .expect("Failed to create stream");
     let frame = stream.next_frame().expect("Failed to capture frame");
 
     // Test pixel access at various positions

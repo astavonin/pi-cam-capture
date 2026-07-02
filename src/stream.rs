@@ -7,7 +7,7 @@ use v4l::video::Capture;
 use v4l::Device;
 
 use crate::error::{Result, StreamError};
-use crate::traits::{CaptureStream, Frame, FrameMetadata, FrameRef};
+use crate::traits::{BorrowedCaptureStream, CaptureStream, Frame, FrameMetadata, FrameRef};
 use std::time::Duration;
 
 /// V4L2 capture stream wrapping mmap-based streaming with FPS control.
@@ -29,12 +29,12 @@ impl<'a> V4L2Stream<'a> {
     ///
     /// Returns `StreamError` if stream creation or FPS setting fails.
     pub fn new(device: &'a Device, buffer_count: u32, target_fps: u32) -> Result<Self> {
+        // Set FPS before allocating mmap buffers; some drivers ignore S_PARM after REQBUFS.
+        let actual_fps = Self::set_fps(device, target_fps)?;
+
         // Create the mmap stream
         let stream = Stream::with_buffers(device, Type::VideoCapture, buffer_count)
             .map_err(|err| StreamError::StartFailed(err.to_string()))?;
-
-        // Set FPS via V4L2 stream parameters
-        let actual_fps = Self::set_fps(device, target_fps)?;
 
         // Log if the driver negotiated a different FPS
         if actual_fps == target_fps {
@@ -111,7 +111,7 @@ impl<'a> V4L2Stream<'a> {
     /// # Errors
     ///
     /// Returns `StreamError::CaptureFailed` if `usec` is outside `[0, 1_000_000)`.
-    fn parse_timestamp(sec: i64, usec: i64) -> Result<Duration> {
+    pub(crate) fn parse_timestamp(sec: i64, usec: i64) -> Result<Duration> {
         if !(0..1_000_000).contains(&usec) {
             return Err(StreamError::CaptureFailed(format!(
                 "Driver returned invalid timestamp usec={usec}"
@@ -125,34 +125,6 @@ impl<'a> V4L2Stream<'a> {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // range checked above
         let nanos = usec as u32 * 1000;
         Ok(Duration::new(secs, nanos))
-    }
-
-    /// Capture the next frame as a zero-copy borrow of the mmap buffer.
-    ///
-    /// The returned [`FrameRef`] borrows directly from the kernel-mapped buffer,
-    /// avoiding the per-frame allocation of [`CaptureStream::next_frame`].
-    /// While the `FrameRef` is alive the buffer is held; dropping it makes the
-    /// buffer available for the next capture.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StreamError` if the kernel dequeue or timestamp parsing fails.
-    pub fn next_frame_borrowed(&mut self) -> Result<FrameRef<'_>> {
-        let (buf, meta) = self
-            .stream
-            .next()
-            .map_err(|err| StreamError::CaptureFailed(err.to_string()))?;
-
-        let timestamp = Self::parse_timestamp(meta.timestamp.sec, meta.timestamp.usec)?;
-
-        Ok(FrameRef {
-            data: buf,
-            metadata: FrameMetadata {
-                sequence: meta.sequence,
-                timestamp,
-                bytes_used: meta.bytesused,
-            },
-        })
     }
 }
 
@@ -177,5 +149,59 @@ impl CaptureStream for V4L2Stream<'_> {
                 bytes_used: meta.bytesused,
             },
         })
+    }
+}
+
+impl BorrowedCaptureStream for V4L2Stream<'_> {
+    fn next_frame_ref(&mut self) -> Result<FrameRef<'_>> {
+        let (buf, meta) = self
+            .stream
+            .next()
+            .map_err(|err| StreamError::CaptureFailed(err.to_string()))?;
+
+        let timestamp = Self::parse_timestamp(meta.timestamp.sec, meta.timestamp.usec)?;
+
+        Ok(FrameRef {
+            data: buf,
+            metadata: FrameMetadata {
+                sequence: meta.sequence,
+                timestamp,
+                bytes_used: meta.bytesused,
+            },
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_timestamp_valid() {
+        let ts = V4L2Stream::parse_timestamp(1, 500_000).expect("valid timestamp");
+        assert_eq!(ts, Duration::new(1, 500_000_000));
+    }
+
+    #[test]
+    fn test_parse_timestamp_usec_at_boundary() {
+        assert!(V4L2Stream::parse_timestamp(0, 999_999).is_ok());
+        let err = V4L2Stream::parse_timestamp(0, 1_000_000).unwrap_err();
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("usec=1000000"),
+            "expected usec value in error message: {err_str}"
+        );
+        let err2 = V4L2Stream::parse_timestamp(0, -1).unwrap_err();
+        let err_str2 = err2.to_string();
+        assert!(
+            err_str2.contains("usec=-1"),
+            "expected usec value in error message: {err_str2}"
+        );
+    }
+
+    #[test]
+    fn test_parse_timestamp_negative_sec_clamped() {
+        let ts = V4L2Stream::parse_timestamp(-5, 0).expect("valid timestamp");
+        assert_eq!(ts, Duration::ZERO);
     }
 }

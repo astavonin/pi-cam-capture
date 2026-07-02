@@ -86,7 +86,7 @@ Vivid state is corrupted. Reload the module:
 
 ```bash
 sudo modprobe -r vivid
-sudo modprobe vivid n_devs=2 node_types=0x1,0x1 input_types=0x81,0x81
+sudo modprobe vivid n_devs=2 node_types=0x1,0x1 num_inputs=1,1 input_types=0x0,0x0
 ```
 
 ### "Module vivid is in use"
@@ -122,6 +122,26 @@ v4l2-ctl -d /dev/video2 --get-fmt-video
 # - YU12 -> -pixel_format yuv420p
 ```
 
+### FPS stability test reports about 40 ms intervals
+
+This means vivid is running at about 25 FPS instead of the expected 30 FPS.
+One common cause is loading vivid with TV-style inputs, such as
+`input_types=0x81,0x81`. For the integration fixture, use webcam inputs and set
+the stream parameter explicitly:
+
+```bash
+sudo modprobe vivid n_devs=2 node_types=0x1,0x1 num_inputs=1,1 input_types=0x0,0x0
+sudo v4l2-ctl -d /dev/video2 --set-parm=30
+sudo v4l2-ctl -d /dev/video3 --set-parm=30
+```
+
+The project setup script applies this configuration automatically:
+
+```bash
+./scripts/dev-setup.sh unload-vivid
+./scripts/dev-setup.sh load-vivid
+```
+
 ## Reload Vivid with Configuration
 
 ```bash
@@ -130,5 +150,6 @@ v4l2-ctl -d /dev/video2 --get-fmt-video
 ```
 
 This sets:
+- Each device to a webcam-style capture input with 30 FPS stream parameters
 - Device 1: Gray Ramp (pattern 20) - gradient for `validate_gradient()`
 - Device 2: 100% Colorbar (pattern 1) - SMPTE bars for `validate_color_bars()`

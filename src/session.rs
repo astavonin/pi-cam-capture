@@ -38,7 +38,11 @@
 use crate::config::CaptureConfig;
 use crate::device::V4L2Device;
 use crate::error::Result;
-use crate::traits::{CameraDevice, CaptureStream as CaptureStreamTrait, Format, Frame};
+use crate::traits::{
+    BorrowedCaptureStream, CameraDevice, CaptureStream as CaptureStreamTrait, Format, Frame,
+    FrameRef,
+};
+use std::time::{Duration, Instant};
 
 /// High-level capture session that manages device configuration.
 ///
@@ -99,6 +103,12 @@ pub struct CaptureSession<D: CameraDevice = V4L2Device> {
 pub struct CaptureStream<'a, D: CameraDevice + 'a> {
     stream: D::Stream<'a>,
     actual_fps: u32,
+    /// Target interval between consecutive frames for schedule-based pacing.
+    target_frame_interval: Duration,
+    /// Absolute deadline for the next frame call; `None` before the first call.
+    /// Advances by exactly one `target_frame_interval` per call regardless of
+    /// actual dequeue duration, maintaining a fixed cadence under varying load.
+    next_deadline: Option<Instant>,
 }
 
 /// Convenience constructor for `V4L2Device` (the common production case).
@@ -234,7 +244,12 @@ impl<D: CameraDevice> CaptureSession<D> {
 
         self.actual_fps = Some(actual_fps);
 
-        Ok(CaptureStream { stream, actual_fps })
+        Ok(CaptureStream {
+            stream,
+            actual_fps,
+            target_frame_interval: frame_interval(actual_fps),
+            next_deadline: None,
+        })
     }
 
     /// Get the capture configuration.
@@ -275,6 +290,7 @@ impl<'a, D: CameraDevice + 'a> CaptureStream<'a, D> {
     ///
     /// This blocks until a frame is available or an error occurs.
     /// The stream efficiently reuses the same mmap buffers across calls.
+    /// May also block to enforce the configured frame rate; see `target_frame_interval`.
     ///
     /// # Errors
     ///
@@ -298,7 +314,27 @@ impl<'a, D: CameraDevice + 'a> CaptureStream<'a, D> {
     // same_name_method: intentional — callers benefit from method-call syntax without a trait import.
     #[allow(clippy::same_name_method)]
     pub fn next_frame(&mut self) -> Result<Frame> {
+        self.pace_next_frame();
         self.stream.next_frame()
+    }
+
+    // Schedule-based pacer: advances next_deadline by one fixed interval per call,
+    // independent of how long the kernel dequeue took. When the deadline is in the past
+    // (slow producer), the pacer fires immediately and catches up on the next call
+    // rather than accumulating debt. This maintains accurate long-run mean FPS
+    // at the cost of transient burst-then-skip under sustained overload.
+    fn pace_next_frame(&mut self) {
+        let now = Instant::now();
+        if let Some(deadline) = self.next_deadline {
+            if now < deadline {
+                std::thread::sleep(deadline - now);
+            }
+            // Advance deadline by one interval regardless of actual sleep duration, so the
+            // pacer maintains a fixed cadence even when kernel dequeue time consumes the gap.
+            self.next_deadline = Some(deadline + self.target_frame_interval);
+        } else {
+            self.next_deadline = Some(now + self.target_frame_interval);
+        }
     }
 
     /// Get the actual FPS set by the driver for this stream.
@@ -311,19 +347,63 @@ impl<'a, D: CameraDevice + 'a> CaptureStream<'a, D> {
     }
 }
 
+impl<'a, D> CaptureStream<'a, D>
+where
+    D: CameraDevice + 'a,
+    D::Stream<'a>: BorrowedCaptureStream,
+{
+    /// Capture the next frame as a zero-copy borrowed view.
+    ///
+    /// The returned [`FrameRef`] borrows from this streaming guard, so another
+    /// frame cannot be captured until the returned value is dropped.
+    /// May also block to enforce the configured frame rate; see `target_frame_interval`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the frame cannot be captured.
+    // same_name_method: intentional — this inherent method (which applies pacing) coexists with
+    // the BorrowedCaptureStream trait impl; the trait impl delegates to this via UFCS.
+    #[allow(clippy::same_name_method)]
+    pub fn next_frame_ref(&mut self) -> Result<FrameRef<'_>> {
+        self.pace_next_frame();
+        self.stream.next_frame_ref()
+    }
+}
+
 impl<'a, D: CameraDevice + 'a> CaptureStreamTrait for CaptureStream<'a, D> {
     fn actual_fps(&self) -> u32 {
         self.actual_fps
     }
 
+    // Rust method resolution picks the inherent next_frame() (which applies pacing) over this
+    // trait method. Removing the inherent method would silently create infinite recursion here.
     fn next_frame(&mut self) -> Result<Frame> {
-        self.stream.next_frame()
+        self.next_frame()
+    }
+}
+
+// same_name_method: intentional — the inherent next_frame_ref() (which applies pacing) coexists
+// with this trait impl. UFCS routes to the inherent method, satisfying the trait without
+// duplicating the pacing logic.
+#[allow(clippy::same_name_method)]
+impl<'a, D> BorrowedCaptureStream for CaptureStream<'a, D>
+where
+    D: CameraDevice + 'a,
+    D::Stream<'a>: BorrowedCaptureStream,
+{
+    fn next_frame_ref(&mut self) -> Result<FrameRef<'_>> {
+        // Delegates to the inherent method, which applies schedule-based pacing before
+        // forwarding to the inner stream.
+        CaptureStream::next_frame_ref(self)
     }
 }
 
 impl<'a, D: CameraDevice + 'a> Drop for CaptureStream<'a, D> {
     fn drop(&mut self) {
-        log::info!("Stopping capture stream (actual_fps={})", self.actual_fps);
+        log::debug!(
+            "CaptureStream guard dropping — inner stream cleanup follows (actual_fps={})",
+            self.actual_fps
+        );
     }
 }
 
@@ -335,6 +415,10 @@ impl<D: CameraDevice> Drop for CaptureSession<D> {
             self.actual_fps
         );
     }
+}
+
+fn frame_interval(fps: u32) -> Duration {
+    Duration::from_secs_f64(1.0 / f64::from(fps.max(1)))
 }
 
 #[cfg(test)]
@@ -428,6 +512,46 @@ mod tests {
     }
 
     #[test]
+    fn test_guard_capture_borrowed_frame() {
+        let device = MockDevice::new();
+        // fps=120 → ~8.3ms interval; assert ≥7ms to confirm pacing fires between consecutive calls
+        // (7ms ≈ 84% of one interval, tolerating scheduler jitter without masking a halved cadence)
+        let config = CaptureConfig {
+            fps: 120,
+            ..test_config()
+        };
+        let mut session = CaptureSession::with_device(device, config).expect("with_device failed");
+        let mut stream = session.streaming().expect("streaming failed");
+
+        let t0 = Instant::now();
+        {
+            let frame = stream.next_frame_ref().expect("next_frame_ref failed");
+            assert_eq!(frame.metadata.sequence, 0);
+            assert_eq!(frame.data.len(), (640 * 480 * 2) as usize);
+        }
+
+        {
+            let _frame = stream
+                .next_frame_ref()
+                .expect("second next_frame_ref failed");
+        }
+        // Two calls at 120fps should take at least one interval (~8.3ms); assert ≥7ms (half an
+        // interval below the expected 8.3ms gives headroom for jitter without masking a halved cadence).
+        assert!(
+            t0.elapsed() >= Duration::from_millis(7),
+            "expected pacing delay ≥7ms between consecutive next_frame_ref calls"
+        );
+        assert!(
+            t0.elapsed() < Duration::from_millis(100),
+            "pacing delay unexpectedly long: {:?}",
+            t0.elapsed()
+        );
+
+        let frame = stream.next_frame().expect("next_frame failed");
+        assert_eq!(frame.metadata.sequence, 2);
+    }
+
+    #[test]
     fn test_target_fps_vs_actual_fps() {
         let device = MockDevice::new();
         let config = CaptureConfig {
@@ -469,5 +593,144 @@ mod tests {
         });
         // Drop should have fired without secondary panic
         assert!(result.is_err());
+    }
+
+    // Verifies that wall-clock time between three consecutive frames meets at least two intervals.
+    // Note: both schedule-based and offset-based pacers would satisfy this assertion; a test that
+    // distinguishes the two designs would require injecting artificial dequeue latency.
+    #[test]
+    fn test_pacer_fires_between_consecutive_frames() {
+        let device = MockDevice::new();
+        // fps=100 → 10ms interval; capture 3 frames and assert wall-clock ≥ 2 intervals (20ms)
+        let config = CaptureConfig {
+            fps: 100,
+            ..test_config()
+        };
+        let mut session = CaptureSession::with_device(device, config).expect("with_device failed");
+        let mut stream = session.streaming().expect("streaming failed");
+
+        let before = Instant::now();
+        let _f1 = stream.next_frame().expect("frame 1 failed");
+        let _f2 = stream.next_frame().expect("frame 2 failed");
+        let _f3 = stream.next_frame().expect("frame 3 failed");
+        let elapsed = before.elapsed();
+
+        assert!(
+            elapsed >= Duration::from_millis(18),
+            "expected ≥ 2 intervals (20ms) for 3 frames at 100fps, got {elapsed:?}"
+        );
+    }
+
+    // frame_interval produces correct durations for common rates
+    #[test]
+    fn test_frame_interval_common_rates() {
+        // 1/30 s ≈ 33_333_333 ns (floor of exact value 33_333_333.3…)
+        let interval_30 = frame_interval(30);
+        assert!(
+            interval_30.as_nanos() >= 33_333_333 && interval_30.as_nanos() <= 33_333_334,
+            "30fps interval should be ~33.33ms, got {interval_30:?}"
+        );
+        // 1/60 s ≈ 16_666_666 ns (floor of exact value 16_666_666.6…)
+        let interval_60 = frame_interval(60);
+        assert!(
+            interval_60.as_nanos() >= 16_666_666 && interval_60.as_nanos() <= 16_666_667,
+            "60fps interval should be ~16.67ms, got {interval_60:?}"
+        );
+    }
+
+    // fps=0 is clamped to 1 Hz to avoid division by zero
+    #[test]
+    fn test_frame_interval_zero_fps_falls_back_to_one_hz() {
+        assert_eq!(frame_interval(0), Duration::from_secs(1));
+    }
+
+    // fps=1 produces a one-second interval
+    #[test]
+    fn test_frame_interval_one_fps() {
+        assert_eq!(frame_interval(1), Duration::from_secs(1));
+    }
+
+    // First call to next_frame must not sleep the full interval (no deadline set yet)
+    #[test]
+    fn test_pacer_first_call_does_not_sleep() {
+        let device = MockDevice::new();
+        // fps=1 → 1s interval; first call must return quickly, not sleep 1 second
+        let config = CaptureConfig {
+            fps: 1,
+            ..test_config()
+        };
+        let mut session = CaptureSession::with_device(device, config).expect("with_device failed");
+        let mut stream = session.streaming().expect("streaming failed");
+        let before = Instant::now();
+        let _ = stream.next_frame().expect("first call failed");
+        assert!(
+            before.elapsed() < Duration::from_millis(100),
+            "first call slept unexpectedly"
+        );
+    }
+
+    // CaptureStream implements BorrowedCaptureStream and works in generic context
+    #[test]
+    fn test_capture_stream_implements_borrowed_capture_stream_trait() {
+        fn use_borrowed<S: BorrowedCaptureStream>(stream: &mut S) -> crate::error::Result<usize> {
+            let frame = stream.next_frame_ref()?;
+            Ok(frame.data.len())
+        }
+
+        let device = MockDevice::new();
+        let config = CaptureConfig {
+            fps: 120,
+            ..test_config()
+        };
+        let mut session = CaptureSession::with_device(device, config).expect("with_device failed");
+        let mut stream = session.streaming().expect("streaming failed");
+        let len = use_borrowed(&mut stream).expect("trait usage failed");
+        assert!(len > 0);
+    }
+
+    // CaptureStream guard propagates stream errors from next_frame through the call chain
+    #[test]
+    fn test_guard_next_frame_propagates_stream_error() {
+        let device = MockDevice::new().with_error_after(1);
+        let config = CaptureConfig {
+            fps: 120,
+            ..test_config()
+        };
+        let mut session = CaptureSession::with_device(device, config).expect("with_device failed");
+        let mut stream = session.streaming().expect("streaming failed");
+        let _first = stream.next_frame().expect("first frame should succeed");
+        let result = stream.next_frame();
+        assert!(
+            matches!(
+                result.unwrap_err(),
+                crate::error::CaptureError::Stream(crate::error::StreamError::CaptureFailed(ref msg))
+                if msg == "injected error"
+            ),
+            "expected StreamError::CaptureFailed(\"injected error\")"
+        );
+    }
+
+    // CaptureStream guard propagates stream errors from next_frame_ref through the call chain
+    #[test]
+    fn test_guard_next_frame_ref_propagates_stream_error() {
+        let device = MockDevice::new().with_error_after(1);
+        let config = CaptureConfig {
+            fps: 120,
+            ..test_config()
+        };
+        let mut session = CaptureSession::with_device(device, config).expect("with_device failed");
+        let mut stream = session.streaming().expect("streaming failed");
+        {
+            let _first = stream.next_frame_ref().expect("first frame should succeed");
+        }
+        let result = stream.next_frame_ref();
+        assert!(
+            matches!(
+                result.unwrap_err(),
+                crate::error::CaptureError::Stream(crate::error::StreamError::CaptureFailed(ref msg))
+                if msg == "injected error"
+            ),
+            "expected StreamError::CaptureFailed(\"injected error\")"
+        );
     }
 }

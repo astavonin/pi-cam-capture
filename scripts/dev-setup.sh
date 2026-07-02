@@ -137,9 +137,9 @@ load_vivid() {
     # Load vivid with recommended parameters:
     # - n_devs=2: Create 2 virtual devices
     # - node_types=0x1,0x1: Both are video capture devices
-    # - input_types=0x81,0x81: Webcam (0x01) + HDMI (0x80) inputs
-    info "Configuration: n_devs=2 node_types=0x1,0x1 input_types=0x81,0x81"
-    $SUDO modprobe vivid n_devs=2 node_types=0x1,0x1 input_types=0x81,0x81
+    # - num_inputs=1,1 input_types=0x0,0x0: Webcam inputs, which support 30 FPS
+    info "Configuration: n_devs=2 node_types=0x1,0x1 num_inputs=1,1 input_types=0x0,0x0"
+    $SUDO modprobe vivid n_devs=2 node_types=0x1,0x1 num_inputs=1,1 input_types=0x0,0x0
 
     if [ $? -eq 0 ]; then
         success "vivid module loaded successfully"
@@ -175,9 +175,9 @@ load_vivid() {
     fi
 }
 
-# Configure different test patterns on vivid devices
-# Device 1: Horizontal Gradient (pattern 14)
-# Device 2: Vertical Lines (pattern 16)
+# Configure different test patterns on vivid devices.
+# Device 1: Gray Ramp (pattern 20)
+# Device 2: 100% Colorbar (pattern 1)
 configure_vivid_patterns() {
     info "Configuring test patterns on vivid devices..."
 
@@ -216,6 +216,13 @@ configure_vivid_patterns() {
         else
             warn "$dev: Could not set format (may not be a capture device)"
             continue
+        fi
+
+        # Set FPS explicitly so timing-sensitive integration tests start from a known cadence.
+        if $SUDO v4l2-ctl -d "$dev" --set-parm=30 2>/dev/null; then
+            success "$dev: Set frame rate to 30 FPS"
+        else
+            warn "$dev: Could not set frame rate to 30 FPS"
         fi
 
         # Set test pattern

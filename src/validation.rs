@@ -60,9 +60,7 @@ pub fn validate_color_bars(frame: &Frame, format: &Format) -> Result<()> {
         let sample_x = (bar_idx as u32 * bar_width) + (bar_width / 2);
 
         let actual_rgb = frame.pixel_at(sample_x, center_y, width).ok_or_else(|| {
-            StreamError::CaptureFailed(format!(
-                "Failed to get pixel at ({sample_x}, {center_y})"
-            ))
+            StreamError::CaptureFailed(format!("Failed to get pixel at ({sample_x}, {center_y})"))
         })?;
 
         if !colors_match(actual_rgb, *expected_rgb, COLOR_TOLERANCE) {
@@ -177,10 +175,9 @@ pub fn validate_gradient(frame: &Frame, format: &Format) -> Result<()> {
 /// - Any sequence number doesn't increment by exactly 1 from the previous (wrapping)
 pub fn validate_frame_sequence(frames: &[Frame]) -> Result<()> {
     if frames.is_empty() {
-        return Err(StreamError::CaptureFailed(
-            "Cannot validate empty frame sequence".to_owned(),
-        )
-        .into());
+        return Err(
+            StreamError::CaptureFailed("Cannot validate empty frame sequence".to_owned()).into(),
+        );
     }
 
     for window in frames.windows(2) {

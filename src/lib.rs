@@ -49,7 +49,7 @@ pub use error::{CaptureError, ConfigError, DeviceError, Result, StreamError};
 pub use session::{CaptureSession, CaptureStream};
 pub use stream::V4L2Stream;
 pub use traits::{
-    CameraDevice, CaptureStream as CaptureStreamTrait, DeviceCapabilities, Format, FourCC, Frame,
-    FrameMetadata, FrameRef,
+    BorrowedCaptureStream, CameraDevice, CaptureStream as CaptureStreamTrait, DeviceCapabilities,
+    Format, FourCC, Frame, FrameMetadata, FrameRef,
 };
 pub use validation::{validate_color_bars, validate_frame_sequence, validate_gradient};

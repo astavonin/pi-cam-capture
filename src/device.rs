@@ -7,7 +7,6 @@ use crate::error::{DeviceError, Result, StreamError};
 use crate::stream::V4L2Stream;
 use crate::traits::{CameraDevice, DeviceCapabilities, Format, FourCC};
 
-
 /// V4L2 device implementation wrapping the v4l crate.
 pub struct V4L2Device {
     device: Device,
@@ -17,8 +16,8 @@ pub struct V4L2Device {
 impl V4L2Device {
     /// Open a V4L2 device by index (e.g., 0 for /dev/video0).
     pub fn open(index: u32) -> Result<Self> {
-        let device = Device::new(index as usize)
-            .map_err(|err| DeviceError::OpenFailed(err.to_string()))?;
+        let device =
+            Device::new(index as usize).map_err(|err| DeviceError::OpenFailed(err.to_string()))?;
 
         let caps = device
             .query_caps()
@@ -28,8 +27,12 @@ impl V4L2Device {
             driver: caps.driver,
             card: caps.card,
             bus_info: caps.bus,
-            can_capture: caps.capabilities.contains(v4l::capability::Flags::VIDEO_CAPTURE),
-            can_stream: caps.capabilities.contains(v4l::capability::Flags::STREAMING),
+            can_capture: caps
+                .capabilities
+                .contains(v4l::capability::Flags::VIDEO_CAPTURE),
+            can_stream: caps
+                .capabilities
+                .contains(v4l::capability::Flags::STREAMING),
         };
 
         Ok(Self {
