@@ -382,7 +382,7 @@ fn test_vivid_pixel_access() {
     let test_points = [(0, 0), (320, 240), (639, 479), (100, 100)];
 
     for (x, y) in test_points {
-        if let Some((r, g, b)) = frame.pixel_at(x, y, format.width) {
+        if let Some((r, g, b)) = frame.pixel_at(x, y).expect("YUYV pixel access should work") {
             println!("Pixel at ({x}, {y}): RGB({r}, {g}, {b})");
         } else {
             println!("Pixel at ({x}, {y}): out of bounds or invalid");
@@ -390,6 +390,95 @@ fn test_vivid_pixel_access() {
     }
 
     // Verify center pixel is accessible
-    let center = frame.pixel_at(format.width / 2, format.height / 2, format.width);
+    let center = frame
+        .pixel_at(format.width / 2, format.height / 2)
+        .expect("YUYV pixel access should work");
     assert!(center.is_some(), "Center pixel should be accessible");
+}
+
+#[test]
+#[serial]
+fn test_vivid_negotiates_yuyv_from_preference_list() {
+    let device_index = require_vivid!();
+    let unsupported = FourCC::new(b"ZZZZ");
+    let config = CaptureConfig::builder()
+        .device(device_index)
+        .resolution(640, 480)
+        .format_preferences(vec![unsupported, FourCC::YUYV, FourCC::RGB3])
+        .fps(30)
+        .buffer_count(4)
+        .build()
+        .expect("vivid preference config should be valid");
+
+    let session = CaptureSession::new(config).expect("Failed to create vivid session");
+    assert_eq!(session.frame_layout().fourcc, FourCC::YUYV);
+    assert_eq!(session.negotiated_format_index(), 1);
+}
+
+#[test]
+#[serial]
+fn test_vivid_reports_stride_from_driver() {
+    let device_index = require_vivid!();
+    let config = CaptureConfig::builder()
+        .device(device_index)
+        .resolution(640, 480)
+        .format(FourCC::YUYV)
+        .fps(30)
+        .buffer_count(4)
+        .build()
+        .expect("vivid config should be valid");
+
+    let session = CaptureSession::new(config).expect("Failed to create vivid session");
+    assert!(session.frame_layout().stride >= session.frame_layout().width * 2);
+    assert!(
+        session.frame_layout().size
+            >= session.frame_layout().stride * session.frame_layout().height
+    );
+}
+
+#[test]
+#[serial]
+fn test_vivid_capture_frame_stride_aware_pixel_access() {
+    let device_index = require_vivid!();
+    let config = CaptureConfig::builder()
+        .device(device_index)
+        .resolution(640, 480)
+        .format(FourCC::YUYV)
+        .fps(30)
+        .buffer_count(4)
+        .build()
+        .expect("vivid config should be valid");
+
+    let mut session = CaptureSession::new(config).expect("Failed to create vivid session");
+    let layout = *session.frame_layout();
+    let mut stream = session.streaming().expect("Failed to create vivid stream");
+    let frame = stream.next_frame().expect("Failed to capture frame");
+
+    for y in [0, layout.height / 2, layout.height - 1] {
+        assert!(
+            frame
+                .pixel_at(layout.width / 2, y)
+                .expect("YUYV pixel access should work")
+                .is_some(),
+            "pixel access should succeed at row {y}"
+        );
+    }
+}
+
+#[test]
+#[serial]
+fn test_vivid_preference_list_single_format_backcompat() {
+    let device_index = require_vivid!();
+    let config = CaptureConfig::builder()
+        .device(device_index)
+        .resolution(640, 480)
+        .format(FourCC::YUYV)
+        .fps(30)
+        .buffer_count(4)
+        .build()
+        .expect("vivid config should be valid");
+
+    let session = CaptureSession::new(config).expect("Failed to create vivid session");
+    assert_eq!(session.config().format_preferences(), &[FourCC::YUYV]);
+    assert_eq!(session.frame_layout().fourcc, FourCC::YUYV);
 }

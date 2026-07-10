@@ -50,9 +50,9 @@ fn test_config(width: u32, height: u32, fps: u32) -> pi_cam_capture::Result<()> 
 
     println!(
         "Actual:    {}x{} {:?} at {} FPS",
-        session.actual_format().width,
-        session.actual_format().height,
-        session.actual_format().fourcc,
+        session.frame_layout().width,
+        session.frame_layout().height,
+        session.frame_layout().fourcc,
         session.config().fps()
     );
 

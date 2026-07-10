@@ -37,14 +37,14 @@ fn run() -> pi_cam_capture::Result<()> {
 
     println!(
         "Format: {}x{} {:?}",
-        session.actual_format().width,
-        session.actual_format().height,
-        session.actual_format().fourcc
+        session.frame_layout().width,
+        session.frame_layout().height,
+        session.frame_layout().fourcc
     );
 
     // Get format info before streaming (while session is accessible)
-    let width = session.actual_format().width;
-    let height = session.actual_format().height;
+    let width = session.frame_layout().width;
+    let height = session.frame_layout().height;
 
     // Create streaming guard
     let mut stream = session.streaming()?;

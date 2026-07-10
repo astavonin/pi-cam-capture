@@ -7,12 +7,16 @@ use v4l::video::Capture;
 use v4l::Device;
 
 use crate::error::{Result, StreamError};
-use crate::traits::{BorrowedCaptureStream, CaptureStream, Frame, FrameMetadata, FrameRef};
+use crate::traits::{
+    BorrowedCaptureStream, CaptureStream, Format, FourCC, Frame, FrameLayout, FrameMetadata,
+    FrameRef,
+};
 use std::time::Duration;
 
 /// V4L2 capture stream wrapping mmap-based streaming with FPS control.
 pub struct V4L2Stream<'a> {
     stream: Stream<'a>,
+    layout: FrameLayout,
     actual_fps: u32,
 }
 
@@ -32,6 +36,18 @@ impl<'a> V4L2Stream<'a> {
         // Set FPS before allocating mmap buffers; some drivers ignore S_PARM after REQBUFS.
         let actual_fps = Self::set_fps(device, target_fps)?;
 
+        let fmt = device
+            .format()
+            .map_err(|err| StreamError::GetFormatFailed(err.to_string()))?;
+        let layout = FrameLayout::from_format(&Format {
+            width: fmt.width,
+            height: fmt.height,
+            fourcc: FourCC::from(fmt.fourcc),
+            stride: fmt.stride,
+            size: fmt.size,
+        })
+        .map_err(|err| StreamError::StartFailed(format!("Invalid negotiated layout: {err}")))?;
+
         // Create the mmap stream
         let stream = Stream::with_buffers(device, Type::VideoCapture, buffer_count)
             .map_err(|err| StreamError::StartFailed(err.to_string()))?;
@@ -43,7 +59,11 @@ impl<'a> V4L2Stream<'a> {
             log::warn!("Requested {target_fps} FPS, but driver set {actual_fps} FPS");
         }
 
-        Ok(Self { stream, actual_fps })
+        Ok(Self {
+            stream,
+            layout,
+            actual_fps,
+        })
     }
 
     /// Get the actual FPS set by the driver.
@@ -148,6 +168,7 @@ impl CaptureStream for V4L2Stream<'_> {
                 timestamp,
                 bytes_used: meta.bytesused,
             },
+            layout: self.layout,
         })
     }
 }
@@ -168,6 +189,7 @@ impl BorrowedCaptureStream for V4L2Stream<'_> {
                 timestamp,
                 bytes_used: meta.bytesused,
             },
+            layout: self.layout,
         })
     }
 }

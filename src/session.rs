@@ -37,10 +37,10 @@
 
 use crate::config::CaptureConfig;
 use crate::device::V4L2Device;
-use crate::error::Result;
+use crate::error::{CaptureError, ConfigError, FormatNegotiationOutcome, Result, StreamError};
 use crate::traits::{
     BorrowedCaptureStream, CameraDevice, CaptureStream as CaptureStreamTrait, Format, Frame,
-    FrameRef,
+    FrameLayout, FrameRef,
 };
 use std::time::{Duration, Instant};
 
@@ -67,7 +67,8 @@ use std::time::{Duration, Instant};
 pub struct CaptureSession<D: CameraDevice = V4L2Device> {
     device: D,
     config: CaptureConfig,
-    actual_format: Format,
+    actual_format: FrameLayout,
+    chosen_format_index: usize,
     actual_fps: Option<u32>,
 }
 
@@ -102,6 +103,7 @@ pub struct CaptureSession<D: CameraDevice = V4L2Device> {
 /// ```
 pub struct CaptureStream<'a, D: CameraDevice + 'a> {
     stream: D::Stream<'a>,
+    layout: FrameLayout,
     actual_fps: u32,
     /// Target interval between consecutive frames for schedule-based pacing.
     target_frame_interval: Duration,
@@ -149,20 +151,22 @@ impl CaptureSession {
             device.capabilities().card
         );
 
-        let requested_format = Format::new(config.width(), config.height(), config.format());
-        let actual_format = device.set_format(&requested_format)?;
+        let (chosen_format_index, actual_format) = negotiate_format(&mut device, &config)?;
 
         log::info!(
-            "Set format: {}x{} {:?}",
+            "Set format: {}x{} {:?} stride={} size={}",
             actual_format.width,
             actual_format.height,
-            actual_format.fourcc
+            actual_format.fourcc,
+            actual_format.stride,
+            actual_format.size
         );
 
         Ok(Self {
             device,
             config,
             actual_format,
+            chosen_format_index,
             actual_fps: None,
         })
     }
@@ -179,12 +183,12 @@ impl<D: CameraDevice> CaptureSession<D> {
     /// Returns an error if the configuration is invalid or the format cannot be set.
     pub fn with_device(mut device: D, config: CaptureConfig) -> Result<Self> {
         config.validate()?;
-        let requested_format = Format::new(config.width(), config.height(), config.format());
-        let actual_format = device.set_format(&requested_format)?;
+        let (chosen_format_index, actual_format) = negotiate_format(&mut device, &config)?;
         Ok(Self {
             device,
             config,
             actual_format,
+            chosen_format_index,
             actual_fps: None,
         })
     }
@@ -246,6 +250,7 @@ impl<D: CameraDevice> CaptureSession<D> {
 
         Ok(CaptureStream {
             stream,
+            layout: self.actual_format,
             actual_fps,
             target_frame_interval: frame_interval(actual_fps),
             next_deadline: None,
@@ -258,10 +263,16 @@ impl<D: CameraDevice> CaptureSession<D> {
         &self.config
     }
 
-    /// Get the actual format set by the driver.
+    /// Get the negotiated buffer layout set by the driver.
     #[must_use]
-    pub const fn actual_format(&self) -> &Format {
+    pub const fn frame_layout(&self) -> &FrameLayout {
         &self.actual_format
+    }
+
+    /// Index of the accepted entry in the format preference list.
+    #[must_use]
+    pub const fn negotiated_format_index(&self) -> usize {
+        self.chosen_format_index
     }
 
     /// Returns the FPS negotiated by the driver after [`streaming()`](Self::streaming) is called.
@@ -315,7 +326,9 @@ impl<'a, D: CameraDevice + 'a> CaptureStream<'a, D> {
     #[allow(clippy::same_name_method)]
     pub fn next_frame(&mut self) -> Result<Frame> {
         self.pace_next_frame();
-        self.stream.next_frame()
+        let mut frame = self.stream.next_frame()?;
+        frame.layout = self.layout;
+        Ok(frame)
     }
 
     // Schedule-based pacer: advances next_deadline by one fixed interval per call,
@@ -345,6 +358,12 @@ impl<'a, D: CameraDevice + 'a> CaptureStream<'a, D> {
     pub const fn actual_fps(&self) -> u32 {
         self.actual_fps
     }
+
+    /// Get the negotiated buffer layout used by this stream.
+    #[must_use]
+    pub const fn frame_layout(&self) -> &FrameLayout {
+        &self.layout
+    }
 }
 
 impl<'a, D> CaptureStream<'a, D>
@@ -366,7 +385,12 @@ where
     #[allow(clippy::same_name_method)]
     pub fn next_frame_ref(&mut self) -> Result<FrameRef<'_>> {
         self.pace_next_frame();
-        self.stream.next_frame_ref()
+        let frame = self.stream.next_frame_ref()?;
+        Ok(FrameRef {
+            data: frame.data,
+            metadata: frame.metadata,
+            layout: self.layout,
+        })
     }
 }
 
@@ -398,6 +422,60 @@ where
     }
 }
 
+fn negotiate_format<D: CameraDevice>(
+    device: &mut D,
+    config: &CaptureConfig,
+) -> Result<(usize, FrameLayout)> {
+    let mut outcomes = Vec::new();
+
+    for (index, fourcc) in config.format_preferences().iter().copied().enumerate() {
+        let requested_format = Format::new(config.width(), config.height(), fourcc);
+
+        match device.set_format(&requested_format) {
+            Ok(actual_format) if actual_format.fourcc != fourcc => {
+                log::debug!(
+                    "negotiate_format: candidate {index} ({fourcc:?}) → Substituted({:?})",
+                    actual_format.fourcc
+                );
+                outcomes.push(FormatNegotiationOutcome::Substituted(actual_format.fourcc));
+            }
+            Ok(actual_format) => match FrameLayout::from_format(&actual_format) {
+                Ok(layout) => {
+                    log::debug!(
+                        "negotiate_format: candidate {index} ({fourcc:?}) → Accepted"
+                    );
+                    return Ok((index, layout));
+                }
+                Err(err) => {
+                    log::debug!(
+                        "negotiate_format: candidate {index} ({fourcc:?}) → LayoutInvalid ({:?}={})",
+                        err.field,
+                        err.value
+                    );
+                    outcomes.push(FormatNegotiationOutcome::LayoutInvalid {
+                        field: err.field,
+                        value: err.value,
+                    });
+                }
+            },
+            Err(CaptureError::Stream(StreamError::SetFormatFailed(_))) => {
+                log::debug!(
+                    "negotiate_format: candidate {index} ({fourcc:?}) → HardRejected"
+                );
+                outcomes.push(FormatNegotiationOutcome::HardRejected);
+            }
+            Err(err) => {
+                log::debug!(
+                    "negotiate_format: candidate {index} ({fourcc:?}) → device error: {err}"
+                );
+                return Err(err);
+            }
+        }
+    }
+
+    Err(ConfigError::UnsupportedFormat { outcomes }.into())
+}
+
 impl<'a, D: CameraDevice + 'a> Drop for CaptureStream<'a, D> {
     fn drop(&mut self) {
         log::debug!(
@@ -424,8 +502,9 @@ fn frame_interval(fps: u32) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mock::MockDevice;
-    use crate::traits::CaptureStream as CaptureStreamTrait;
+    use crate::error::{ConfigError, FormatNegotiationOutcome};
+    use crate::mock::{MockDevice, MockFormatResponse};
+    use crate::traits::{CaptureStream as CaptureStreamTrait, FourCC, LayoutInvalidField};
 
     // Helper: build a valid config without opening a real device
     fn test_config() -> CaptureConfig {
@@ -433,10 +512,19 @@ mod tests {
             device_index: 0,
             width: 640,
             height: 480,
-            format: crate::traits::FourCC::YUYV,
+            format_preferences: vec![FourCC::YUYV],
             fps: 30,
             buffer_count: 4,
         }
+    }
+
+    fn preference_config(formats: Vec<FourCC>) -> CaptureConfig {
+        CaptureConfig::builder()
+            .resolution(640, 480)
+            .format_preferences(formats)
+            .fps(120)
+            .build()
+            .expect("valid preference config")
     }
 
     #[test]
@@ -571,6 +659,344 @@ mod tests {
     }
 
     #[test]
+    fn test_framelayout_accepts_driver_padding() {
+        let padded = Format {
+            stride: 1288,
+            size: 1288 * 480,
+            ..Format::new(640, 480, FourCC::YUYV)
+        };
+        let device = MockDevice::new()
+            .with_format_response(FourCC::YUYV, MockFormatResponse::Accept(padded));
+        let session =
+            CaptureSession::with_device(device, test_config()).expect("with_device failed");
+
+        assert_eq!(session.frame_layout().stride, 1288);
+        assert_eq!(session.frame_layout().size, 1288 * 480);
+    }
+
+    #[test]
+    fn test_framelayout_rejects_driver_size_below_lower_bound_yuyv() {
+        let invalid = Format {
+            size: 1279 * 480,
+            ..Format::new(640, 480, FourCC::YUYV)
+        };
+        let device = MockDevice::new()
+            .with_format_response(FourCC::YUYV, MockFormatResponse::Accept(invalid));
+        let result = CaptureSession::with_device(device, test_config());
+
+        assert!(matches!(
+            result.err().expect("session should fail"),
+            CaptureError::Config(ConfigError::UnsupportedFormat { outcomes })
+            if outcomes == vec![FormatNegotiationOutcome::LayoutInvalid {
+                field: LayoutInvalidField::Size,
+                value: 1279 * 480,
+            }]
+        ));
+    }
+
+    #[test]
+    fn test_framelayout_rejects_driver_size_below_lower_bound_nv12() {
+        let invalid = Format {
+            size: 460_799,
+            ..Format::new(640, 480, FourCC::NV12)
+        };
+        let device = MockDevice::new()
+            .with_format_response(FourCC::NV12, MockFormatResponse::Accept(invalid));
+        let result = CaptureSession::with_device(device, preference_config(vec![FourCC::NV12]));
+
+        assert!(matches!(
+            result.err().expect("session should fail"),
+            CaptureError::Config(ConfigError::UnsupportedFormat { outcomes })
+            if outcomes == vec![FormatNegotiationOutcome::LayoutInvalid {
+                field: LayoutInvalidField::Size,
+                value: 460_799,
+            }]
+        ));
+    }
+
+    #[test]
+    fn test_framelayout_rejects_driver_size_below_lower_bound_rgb3() {
+        let invalid = Format {
+            size: 921_599,
+            ..Format::new(640, 480, FourCC::RGB3)
+        };
+        let device = MockDevice::new()
+            .with_format_response(FourCC::RGB3, MockFormatResponse::Accept(invalid));
+        let result = CaptureSession::with_device(device, preference_config(vec![FourCC::RGB3]));
+
+        assert!(matches!(
+            result.err().expect("session should fail"),
+            CaptureError::Config(ConfigError::UnsupportedFormat { outcomes })
+            if outcomes == vec![FormatNegotiationOutcome::LayoutInvalid {
+                field: LayoutInvalidField::Size,
+                value: 921_599,
+            }]
+        ));
+    }
+
+    #[test]
+    fn test_framelayout_rejects_driver_stride_below_lower_bound() {
+        let invalid = Format {
+            stride: 1279,
+            size: 1279 * 480,
+            ..Format::new(640, 480, FourCC::YUYV)
+        };
+        let device = MockDevice::new()
+            .with_format_response(FourCC::YUYV, MockFormatResponse::Accept(invalid));
+        let result = CaptureSession::with_device(device, test_config());
+
+        assert!(matches!(
+            result.err().expect("session should fail"),
+            CaptureError::Config(ConfigError::UnsupportedFormat { outcomes })
+            if outcomes == vec![FormatNegotiationOutcome::LayoutInvalid {
+                field: LayoutInvalidField::Stride,
+                value: 1279,
+            }]
+        ));
+    }
+
+    #[test]
+    fn test_framelayout_rejects_driver_stride_and_size_both_below_lower_bound() {
+        let invalid = Format {
+            stride: 1279,
+            size: 1,
+            ..Format::new(640, 480, FourCC::YUYV)
+        };
+        let device = MockDevice::new()
+            .with_format_response(FourCC::YUYV, MockFormatResponse::Accept(invalid));
+        let result = CaptureSession::with_device(device, test_config());
+
+        assert!(matches!(
+            result.err().expect("session should fail"),
+            CaptureError::Config(ConfigError::UnsupportedFormat { outcomes })
+            if outcomes == vec![FormatNegotiationOutcome::LayoutInvalid {
+                field: LayoutInvalidField::Stride,
+                value: 1279,
+            }]
+        ));
+    }
+
+    #[test]
+    fn test_negotiation_first_accepted_returned() {
+        let device = MockDevice::new();
+        let session = CaptureSession::with_device(
+            device,
+            preference_config(vec![FourCC::NV12, FourCC::YUYV, FourCC::RGB3]),
+        )
+        .expect("NV12 should be accepted");
+
+        assert_eq!(session.frame_layout().fourcc, FourCC::NV12);
+        assert_eq!(session.negotiated_format_index(), 0);
+        assert_eq!(session.device.format_requests(), &[FourCC::NV12]);
+    }
+
+    #[test]
+    fn test_negotiation_fallback_to_second() {
+        let device =
+            MockDevice::new().with_format_response(FourCC::NV12, MockFormatResponse::Reject);
+        let session = CaptureSession::with_device(
+            device,
+            preference_config(vec![FourCC::NV12, FourCC::YUYV, FourCC::RGB3]),
+        )
+        .expect("YUYV fallback should be accepted");
+
+        assert_eq!(session.frame_layout().fourcc, FourCC::YUYV);
+        assert_eq!(session.negotiated_format_index(), 1);
+        assert_eq!(
+            session.device.format_requests(),
+            &[FourCC::NV12, FourCC::YUYV]
+        );
+    }
+
+    #[test]
+    fn test_negotiation_fallback_to_last() {
+        let device = MockDevice::new()
+            .with_format_response(FourCC::NV12, MockFormatResponse::Reject)
+            .with_format_response(FourCC::YUYV, MockFormatResponse::Reject);
+        let session = CaptureSession::with_device(
+            device,
+            preference_config(vec![FourCC::NV12, FourCC::YUYV, FourCC::RGB3]),
+        )
+        .expect("RGB3 fallback should be accepted");
+
+        assert_eq!(session.frame_layout().fourcc, FourCC::RGB3);
+        assert_eq!(session.negotiated_format_index(), 2);
+        assert_eq!(
+            session.device.format_requests(),
+            &[FourCC::NV12, FourCC::YUYV, FourCC::RGB3]
+        );
+    }
+
+    #[test]
+    fn test_negotiation_all_rejected_returns_unsupported_format_error() {
+        let device = MockDevice::new()
+            .with_format_response(FourCC::NV12, MockFormatResponse::Reject)
+            .with_format_response(FourCC::YUYV, MockFormatResponse::Reject)
+            .with_format_response(FourCC::RGB3, MockFormatResponse::Reject);
+        let result = CaptureSession::with_device(
+            device,
+            preference_config(vec![FourCC::NV12, FourCC::YUYV, FourCC::RGB3]),
+        );
+
+        assert!(matches!(
+            result.err().expect("session should fail"),
+            CaptureError::Config(ConfigError::UnsupportedFormat { outcomes })
+            if outcomes == vec![
+                FormatNegotiationOutcome::HardRejected,
+                FormatNegotiationOutcome::HardRejected,
+                FormatNegotiationOutcome::HardRejected,
+            ]
+        ));
+    }
+
+    #[test]
+    fn test_negotiation_error_preserves_substitution_outcome() {
+        let substituted = Format::new(640, 480, FourCC::YUYV);
+        let device = MockDevice::new()
+            .with_format_response(FourCC::NV12, MockFormatResponse::Accept(substituted))
+            .with_format_response(FourCC::YUYV, MockFormatResponse::Reject)
+            .with_format_response(FourCC::RGB3, MockFormatResponse::Reject);
+        let result = CaptureSession::with_device(
+            device,
+            preference_config(vec![FourCC::NV12, FourCC::YUYV, FourCC::RGB3]),
+        );
+
+        assert!(matches!(
+            result.err().expect("session should fail"),
+            CaptureError::Config(ConfigError::UnsupportedFormat { outcomes })
+            if outcomes == vec![
+                FormatNegotiationOutcome::Substituted(FourCC::YUYV),
+                FormatNegotiationOutcome::HardRejected,
+                FormatNegotiationOutcome::HardRejected,
+            ]
+        ));
+    }
+
+    #[test]
+    fn test_negotiation_driver_substitution_counts_as_rejection() {
+        let substituted = Format::new(640, 480, FourCC::YUYV);
+        let device = MockDevice::new()
+            .with_format_response(FourCC::NV12, MockFormatResponse::Accept(substituted));
+        let session = CaptureSession::with_device(
+            device,
+            preference_config(vec![FourCC::NV12, FourCC::YUYV]),
+        )
+        .expect("explicit YUYV request should be accepted");
+
+        assert_eq!(session.frame_layout().fourcc, FourCC::YUYV);
+        assert_eq!(session.negotiated_format_index(), 1);
+        assert_eq!(
+            session.device.format_requests(),
+            &[FourCC::NV12, FourCC::YUYV]
+        );
+    }
+
+    #[test]
+    fn test_negotiation_accepts_driver_dimension_substitution() {
+        let actual = Format::new(800, 600, FourCC::YUYV);
+        let device = MockDevice::new()
+            .with_format_response(FourCC::YUYV, MockFormatResponse::Accept(actual));
+        let session =
+            CaptureSession::with_device(device, test_config()).expect("with_device failed");
+
+        assert_eq!(session.frame_layout().width, 800);
+        assert_eq!(session.frame_layout().height, 600);
+    }
+
+    #[test]
+    fn test_negotiated_format_reported_to_caller() {
+        let actual = Format {
+            stride: 1936,
+            size: 1936 * 480,
+            ..Format::new(640, 480, FourCC::RGB3)
+        };
+        let device = MockDevice::new()
+            .with_format_response(FourCC::RGB3, MockFormatResponse::Accept(actual));
+        let session = CaptureSession::with_device(device, preference_config(vec![FourCC::RGB3]))
+            .expect("RGB3 should negotiate");
+
+        assert_eq!(session.frame_layout().fourcc, FourCC::RGB3);
+        assert_eq!(session.frame_layout().stride, 1936);
+        assert_eq!(session.frame_layout().size, 1936 * 480);
+    }
+
+    #[test]
+    fn test_negotiation_occurs_exactly_once_per_session() {
+        let device =
+            MockDevice::new().with_format_response(FourCC::NV12, MockFormatResponse::Reject);
+        let mut session = CaptureSession::with_device(
+            device,
+            preference_config(vec![FourCC::NV12, FourCC::YUYV]),
+        )
+        .expect("YUYV fallback should negotiate");
+        let calls_after_construction = session.device.set_format_call_count();
+
+        {
+            let mut stream = session.streaming().expect("streaming failed");
+            let _first = stream.next_frame().expect("frame 1 failed");
+            let _second = stream.next_frame().expect("frame 2 failed");
+        }
+
+        assert_eq!(
+            session.device.set_format_call_count(),
+            calls_after_construction
+        );
+    }
+
+    #[test]
+    fn test_capturesession_mjpg_negotiation_succeeds() {
+        let actual = Format {
+            size: 4096,
+            ..Format::new(640, 480, FourCC::MJPG)
+        };
+        let device = MockDevice::new()
+            .with_format_response(FourCC::MJPG, MockFormatResponse::Accept(actual));
+        let session = CaptureSession::with_device(device, preference_config(vec![FourCC::MJPG]))
+            .expect("MJPG with nonzero size should negotiate");
+
+        assert_eq!(session.frame_layout().fourcc, FourCC::MJPG);
+        assert_eq!(session.frame_layout().stride, 0);
+        assert_eq!(session.frame_layout().size, 4096);
+    }
+
+    #[test]
+    fn test_capturesession_mjpg_rejects_zero_size() {
+        let device = MockDevice::new();
+        let result = CaptureSession::with_device(device, preference_config(vec![FourCC::MJPG]));
+
+        assert!(matches!(
+            result.err().expect("session should fail"),
+            CaptureError::Config(ConfigError::UnsupportedFormat { outcomes })
+            if outcomes == vec![FormatNegotiationOutcome::LayoutInvalid {
+                field: LayoutInvalidField::Size,
+                value: 0,
+            }]
+        ));
+    }
+
+    #[test]
+    fn test_device_level_error_propagates_outside_fallback_loop() {
+        // YUYV is set to Reject so that if the loop erroneously continues after the IoError on
+        // NV12, it would exhaust all candidates and return UnsupportedFormat — not CaptureError::Io.
+        // The assertion below therefore also verifies that the loop stopped at the IoError.
+        let device = MockDevice::new()
+            .with_format_response(
+                FourCC::NV12,
+                MockFormatResponse::IoError("mock device gone".to_owned()),
+            )
+            .with_format_response(FourCC::YUYV, MockFormatResponse::Reject);
+        let result = CaptureSession::with_device(
+            device,
+            preference_config(vec![FourCC::NV12, FourCC::YUYV]),
+        );
+
+        assert!(matches!(
+            result.err().expect("session should fail"),
+            CaptureError::Io(_)
+        ));
+    }
+
+    #[test]
     #[allow(clippy::panic)] // intentional panic to exercise Drop on unwind
     fn test_guard_drop_on_panic() {
         // Verify the guard's Drop fires even during an unwinding panic.
@@ -582,7 +1008,7 @@ mod tests {
                     device_index: 0,
                     width: 640,
                     height: 480,
-                    format: crate::traits::FourCC::YUYV,
+                    format_preferences: vec![FourCC::YUYV],
                     fps: 30,
                     buffer_count: 4,
                 },

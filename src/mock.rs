@@ -1,10 +1,22 @@
 //! Mock device implementation for testing without hardware.
 
-use crate::error::Result;
+use crate::error::{CaptureError, Result, StreamError};
 use crate::traits::{
     BorrowedCaptureStream, CameraDevice, CaptureStream, DeviceCapabilities, Format, FourCC, Frame,
-    FrameMetadata, FrameRef,
+    FrameLayout, FrameMetadata, FrameRef,
 };
+use std::io;
+
+/// Scripted response for a mock format negotiation call.
+#[derive(Debug, Clone)]
+pub enum MockFormatResponse {
+    /// Return this driver format successfully.
+    Accept(Format),
+    /// Return a set-format failure that participates in preference-list fallback.
+    Reject,
+    /// Return a device-level I/O error that must stop negotiation.
+    IoError(String),
+}
 
 /// Mock device for testing without hardware.
 pub struct MockDevice {
@@ -15,6 +27,8 @@ pub struct MockDevice {
     /// When `Some(n)`, the stream created by this device will inject a `CaptureFailed` error
     /// after `n` successful frames. Forwarded to `MockStream::error_after` on `create_stream`.
     error_after: Option<u32>,
+    format_responses: Vec<(FourCC, MockFormatResponse)>,
+    format_requests: Vec<FourCC>,
 }
 
 impl Default for MockDevice {
@@ -38,6 +52,8 @@ impl MockDevice {
             format: Format::new(640, 480, FourCC::YUYV),
             frame_count: 0,
             error_after: None,
+            format_responses: Vec::new(),
+            format_requests: Vec::new(),
         }
     }
 
@@ -62,6 +78,31 @@ impl MockDevice {
         self.error_after = Some(n);
         self
     }
+
+    /// Script the response returned when `requested` is passed to `set_format`.
+    #[must_use]
+    pub fn with_format_response(mut self, requested: FourCC, response: MockFormatResponse) -> Self {
+        self.format_responses.push((requested, response));
+        self
+    }
+
+    /// Number of set-format calls made against this mock device.
+    #[must_use]
+    pub fn set_format_call_count(&self) -> usize {
+        self.format_requests.len()
+    }
+
+    /// Requested formats passed to `set_format`, in call order.
+    #[must_use]
+    pub fn format_requests(&self) -> &[FourCC] {
+        &self.format_requests
+    }
+
+    fn scripted_response(&self, requested: FourCC) -> Option<MockFormatResponse> {
+        self.format_responses
+            .iter()
+            .find_map(|(fourcc, response)| (*fourcc == requested).then(|| response.clone()))
+    }
 }
 
 impl CameraDevice for MockDevice {
@@ -76,14 +117,33 @@ impl CameraDevice for MockDevice {
     }
 
     fn set_format(&mut self, format: &Format) -> Result<Format> {
-        self.format = format.clone();
-        Ok(self.format.clone())
+        self.format_requests.push(format.fourcc);
+
+        match self.scripted_response(format.fourcc) {
+            Some(MockFormatResponse::Accept(actual)) => {
+                self.format = actual;
+                Ok(self.format.clone())
+            }
+            Some(MockFormatResponse::Reject) => {
+                Err(StreamError::SetFormatFailed("mock rejected format".to_owned()).into())
+            }
+            Some(MockFormatResponse::IoError(message)) => {
+                Err(CaptureError::Io(io::Error::other(message)))
+            }
+            None => {
+                self.format = format.clone();
+                Ok(self.format.clone())
+            }
+        }
     }
 
     fn create_stream(&mut self, buffer_count: u32, fps: u32) -> Result<Self::Stream<'_>> {
         let error_after = self.error_after;
+        let layout = FrameLayout::from_format(&self.format)
+            .map_err(|err| StreamError::StartFailed(format!("Invalid mock layout: {err}")))?;
         Ok(MockStream {
             device: self,
+            layout,
             pattern: TestPattern::ColorBars,
             fps,
             buffer_count,
@@ -107,6 +167,7 @@ pub enum TestPattern {
 /// Mock capture stream for testing.
 pub struct MockStream<'a> {
     device: &'a mut MockDevice,
+    layout: FrameLayout,
     pattern: TestPattern,
     fps: u32,
     buffer_count: u32,
@@ -191,22 +252,24 @@ impl CaptureStream for MockStream<'_> {
 
     fn next_frame(&mut self) -> Result<Frame> {
         self.check_error()?;
-        let format = &self.device.format;
-        let data = generate_test_frame(format, self.pattern);
+        let data = generate_test_frame_for_layout(&self.layout, self.pattern);
         // Use actual data length so bytes_used is correct even for MJPG (where format.size == 0)
         #[allow(clippy::cast_possible_truncation)] // frame sizes fit in u32 in practice
         let bytes_used = data.len() as u32;
         let metadata = self.next_metadata(bytes_used);
 
-        Ok(Frame { data, metadata })
+        Ok(Frame {
+            data,
+            metadata,
+            layout: self.layout,
+        })
     }
 }
 
 impl BorrowedCaptureStream for MockStream<'_> {
     fn next_frame_ref(&mut self) -> Result<FrameRef<'_>> {
         self.check_error()?;
-        let format = &self.device.format;
-        write_test_frame(&mut self.current_frame, format, self.pattern);
+        write_test_frame_for_layout(&mut self.current_frame, &self.layout, self.pattern);
         // Use actual buffer length so bytes_used is correct even for MJPG (where format.size == 0)
         #[allow(clippy::cast_possible_truncation)] // frame sizes fit in u32 in practice
         let bytes_used = self.current_frame.len() as u32;
@@ -215,36 +278,55 @@ impl BorrowedCaptureStream for MockStream<'_> {
         Ok(FrameRef {
             data: &self.current_frame,
             metadata,
+            layout: self.layout,
         })
     }
 }
 
 /// Generate test frame data based on pattern.
 pub(crate) fn generate_test_frame(format: &Format, pattern: TestPattern) -> Vec<u8> {
-    let size = (format.width * format.height * 2) as usize; // YUYV = 2 bytes/pixel
+    FrameLayout::from_format(format).map_or_else(
+        |_| Vec::new(),
+        |layout| generate_test_frame_for_layout(&layout, pattern),
+    )
+}
+
+fn generate_test_frame_for_layout(layout: &FrameLayout, pattern: TestPattern) -> Vec<u8> {
+    let size = layout.size as usize;
     let mut data = vec![0u8; size];
-    fill_test_frame(&mut data, format, pattern);
+    fill_test_frame(&mut data, layout, pattern);
     data
 }
 
-fn write_test_frame(data: &mut Vec<u8>, format: &Format, pattern: TestPattern) {
-    let size = (format.width * format.height * 2) as usize; // YUYV = 2 bytes/pixel
+fn write_test_frame_for_layout(data: &mut Vec<u8>, layout: &FrameLayout, pattern: TestPattern) {
+    let size = layout.size as usize;
     data.clear();
     data.resize(size, 0);
-    fill_test_frame(data, format, pattern);
+    fill_test_frame(data, layout, pattern);
 }
 
-fn fill_test_frame(data: &mut [u8], format: &Format, pattern: TestPattern) {
-    match pattern {
-        TestPattern::ColorBars => {
-            generate_color_bars(data, format.width, format.height);
-        }
-        TestPattern::Gradient => {
-            generate_gradient(data, format.width, format.height);
-        }
-        TestPattern::Solid(y, u, v) => {
-            generate_solid(data, y, u, v);
-        }
+fn fill_test_frame(data: &mut [u8], layout: &FrameLayout, pattern: TestPattern) {
+    match layout.fourcc {
+        FourCC::YUYV => match pattern {
+            TestPattern::ColorBars => {
+                generate_color_bars(data, layout.width, layout.height, layout.stride);
+            }
+            TestPattern::Gradient => {
+                generate_gradient(data, layout.width, layout.height, layout.stride);
+            }
+            TestPattern::Solid(y, u, v) => generate_solid_yuyv(data, y, u, v),
+        },
+        FourCC::RGB3 => match pattern {
+            TestPattern::ColorBars => {
+                generate_rgb3_color_bars(data, layout.width, layout.height, layout.stride);
+            }
+            TestPattern::Gradient => {
+                generate_rgb3_gradient(data, layout.width, layout.height, layout.stride);
+            }
+            TestPattern::Solid(r, g, b) => generate_solid_rgb3(data, r, g, b),
+        },
+        FourCC::NV12 | FourCC::MJPG => data.fill(0x80),
+        _ => {}
     }
 }
 
@@ -256,7 +338,7 @@ fn write_yuyv(data: &mut [u8], offset: usize, y0: u8, u: u8, y1: u8, v: u8) {
 }
 
 /// Generate YUYV color bars pattern.
-fn generate_color_bars(data: &mut [u8], width: u32, height: u32) {
+fn generate_color_bars(data: &mut [u8], width: u32, height: u32, stride: u32) {
     // SMPTE EG 1-1990 100% color bar YUV values (YUYV packed)
     // 8 color bars: White, Yellow, Cyan, Green, Magenta, Red, Blue, Black
     let bars: [(u8, u8, u8); 8] = [
@@ -278,28 +360,75 @@ fn generate_color_bars(data: &mut [u8], width: u32, height: u32) {
             let bar_idx = (x / bar_width).min(7) as usize;
             // bars has exactly 8 elements; bar_idx is clamped to 0..=7
             let (y_val, u_val, v_val) = bars.get(bar_idx).copied().unwrap_or((16, 128, 128));
-            let offset = ((y * width + x) * 2) as usize;
+            let offset = (y as usize * stride as usize) + (x as usize * 2);
             write_yuyv(data, offset, y_val, u_val, y_val, v_val);
         }
     }
 }
 
 /// Generate YUYV horizontal gradient pattern.
-fn generate_gradient(data: &mut [u8], width: u32, height: u32) {
+fn generate_gradient(data: &mut [u8], width: u32, height: u32, stride: u32) {
     for y in 0..height {
         for x in (0..width).step_by(2) {
             #[allow(clippy::cast_possible_truncation)]
             let y_val = ((x * 255) / width) as u8;
-            let offset = ((y * width + x) * 2) as usize;
+            let offset = (y as usize * stride as usize) + (x as usize * 2);
             write_yuyv(data, offset, y_val, 128, y_val, 128);
         }
     }
 }
 
 /// Generate solid color YUYV frame.
-fn generate_solid(data: &mut [u8], y: u8, u: u8, v: u8) {
+fn generate_solid_yuyv(data: &mut [u8], y: u8, u: u8, v: u8) {
     for chunk in data.chunks_exact_mut(4) {
         chunk.copy_from_slice(&[y, u, y, v]);
+    }
+}
+
+fn generate_rgb3_color_bars(data: &mut [u8], width: u32, height: u32, stride: u32) {
+    let bars: [(u8, u8, u8); 8] = [
+        (235, 235, 235),
+        (235, 235, 11),
+        (12, 236, 237),
+        (13, 237, 13),
+        (237, 13, 237),
+        (238, 14, 13),
+        (15, 15, 239),
+        (16, 16, 16),
+    ];
+    let bar_width = (width / 8).max(1);
+
+    for y in 0..height {
+        for x in 0..width {
+            let bar_idx = (x / bar_width).min(7) as usize;
+            let Some((r, g, b)) = bars.get(bar_idx).copied() else {
+                continue;
+            };
+            let offset = (y as usize * stride as usize) + (x as usize * 3);
+            if let Some(chunk) = data.get_mut(offset..offset + 3) {
+                let rgb: [u8; 3] = (r, g, b).into();
+                chunk.copy_from_slice(&rgb);
+            }
+        }
+    }
+}
+
+fn generate_rgb3_gradient(data: &mut [u8], width: u32, height: u32, stride: u32) {
+    for y in 0..height {
+        for x in 0..width {
+            #[allow(clippy::cast_possible_truncation)]
+            let val = ((x * 255) / width) as u8;
+            let offset = (y as usize * stride as usize) + (x as usize * 3);
+            if let Some(chunk) = data.get_mut(offset..offset + 3) {
+                chunk.copy_from_slice(&[val, val, val]);
+            }
+        }
+    }
+}
+
+fn generate_solid_rgb3(data: &mut [u8], r: u8, g: u8, b: u8) {
+    for chunk in data.chunks_exact_mut(3) {
+        chunk.copy_from_slice(&[r, g, b]);
     }
 }
 
@@ -497,10 +626,13 @@ mod tests {
         assert!(frame.metadata.bytes_used > 0);
     }
 
-    // MJPG format has format.size == 0; bytes_used must still reflect actual data length
+    // MJPG layout requires a nonzero driver-reported maximum frame size.
     #[test]
     fn test_mock_stream_bytes_used_nonzero_for_mjpg_format() {
-        let mut device = MockDevice::new().with_format(Format::new(64, 64, FourCC::MJPG));
+        let mut device = MockDevice::new().with_format(Format {
+            size: 1024,
+            ..Format::new(64, 64, FourCC::MJPG)
+        });
         let mut stream = device.create_stream(4, 30).expect("create_stream failed");
 
         let frame = stream.next_frame().expect("next_frame failed");
@@ -516,5 +648,17 @@ mod tests {
                 "borrowed bytes_used must be positive for MJPG"
             );
         }
+    }
+
+    #[test]
+    fn test_mock_stream_rejects_mjpg_zero_size_layout() {
+        let mut device = MockDevice::new().with_format(Format::new(64, 64, FourCC::MJPG));
+        let result = device.create_stream(4, 30);
+
+        assert!(matches!(
+            result.err().expect("stream should fail"),
+            crate::error::CaptureError::Stream(crate::error::StreamError::StartFailed(ref msg))
+            if msg.contains("Invalid mock layout")
+        ));
     }
 }

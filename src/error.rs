@@ -1,5 +1,6 @@
 //! Error types for camera operations.
 
+use crate::traits::{FourCC, LayoutInvalidField};
 use thiserror::Error;
 
 /// Top-level error type for all camera operations.
@@ -17,9 +18,32 @@ pub enum CaptureError {
     #[error("Stream error: {0}")]
     Stream(#[from] StreamError),
 
+    /// Frame access error.
+    #[error("Frame error: {0}")]
+    Frame(#[from] FrameError),
+
     /// I/O error.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// Per-format outcome from a capture format negotiation attempt.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatNegotiationOutcome {
+    /// The driver rejected the requested format.
+    HardRejected,
+
+    /// The driver accepted the set-format call but returned a different pixel format.
+    Substituted(FourCC),
+
+    /// The driver returned the requested format with an invalid buffer layout.
+    LayoutInvalid {
+        /// The first layout field that failed validation.
+        field: LayoutInvalidField,
+        /// The driver-reported value for the failing field.
+        value: u32,
+    },
 }
 
 /// Device operation errors.
@@ -50,8 +74,11 @@ pub enum DeviceError {
 #[derive(Error, Debug)]
 pub enum ConfigError {
     /// Unsupported pixel format.
-    #[error("Unsupported pixel format: {0:?}")]
-    UnsupportedFormat(String),
+    #[error("Unsupported pixel format preferences: {outcomes:?}")]
+    UnsupportedFormat {
+        /// Per-entry negotiation outcomes in preference-list order.
+        outcomes: Vec<FormatNegotiationOutcome>,
+    },
 
     /// Unsupported resolution.
     #[error("Unsupported resolution: {width}x{height}")]
@@ -69,6 +96,15 @@ pub enum ConfigError {
     /// Invalid buffer count.
     #[error("Invalid buffer count: {0} (must be 2-8)")]
     InvalidBufferCount(u32),
+}
+
+/// Frame pixel-access errors.
+#[non_exhaustive]
+#[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameError {
+    /// Pixel access is not supported for the frame's negotiated pixel format.
+    #[error("Pixel access is not supported for format {0:?}")]
+    UnsupportedPixelAccess(FourCC),
 }
 
 /// Stream operation errors.

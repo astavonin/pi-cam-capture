@@ -37,8 +37,8 @@ pub struct CaptureConfig {
     /// Frame height in pixels.
     pub(crate) height: u32,
 
-    /// Pixel format.
-    pub(crate) format: FourCC,
+    /// Pixel formats in preference order.
+    pub(crate) format_preferences: Vec<FourCC>,
 
     /// Target frames per second.
     pub(crate) fps: u32,
@@ -68,8 +68,17 @@ impl CaptureConfig {
 
     /// Pixel format.
     #[must_use]
-    pub const fn format(&self) -> FourCC {
-        self.format
+    pub fn format(&self) -> FourCC {
+        self.format_preferences
+            .first()
+            .copied()
+            .expect("CaptureConfig::validate ensures at least one format preference")
+    }
+
+    /// Pixel formats in preference order.
+    #[must_use]
+    pub fn format_preferences(&self) -> &[FourCC] {
+        &self.format_preferences
     }
 
     /// Target frames per second.
@@ -126,6 +135,13 @@ impl CaptureConfig {
             .into());
         }
 
+        if self.format_preferences.is_empty() {
+            return Err(ConfigError::UnsupportedFormat {
+                outcomes: Vec::new(),
+            }
+            .into());
+        }
+
         Ok(())
     }
 }
@@ -137,7 +153,7 @@ impl Default for CaptureConfig {
             device_index: 0,
             width: 1920,
             height: 1080,
-            format: FourCC::YUYV,
+            format_preferences: vec![FourCC::YUYV],
             fps: 30,
             buffer_count: 4,
         }
@@ -176,8 +192,15 @@ impl CaptureConfigBuilder {
 
     /// Set the pixel format.
     #[must_use]
-    pub const fn format(mut self, format: FourCC) -> Self {
-        self.config.format = format;
+    pub fn format(mut self, format: FourCC) -> Self {
+        self.config.format_preferences = vec![format];
+        self
+    }
+
+    /// Set pixel formats in preference order.
+    #[must_use]
+    pub fn format_preferences(mut self, formats: Vec<FourCC>) -> Self {
+        self.config.format_preferences = formats;
         self
     }
 
@@ -398,12 +421,47 @@ mod tests {
             device_index: 0,
             width: 1920,
             height: 1080,
-            format: FourCC::YUYV,
+            format_preferences: vec![FourCC::YUYV],
             fps: 30,
         };
         assert!(matches!(
             config.validate().unwrap_err(),
             crate::error::CaptureError::Config(ConfigError::InvalidBufferCount(0))
         ));
+    }
+
+    #[test]
+    fn test_captureconfig_rejects_empty_preference_list() {
+        let result = CaptureConfig::builder()
+            .format_preferences(Vec::new())
+            .build();
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::error::CaptureError::Config(ConfigError::UnsupportedFormat { outcomes })
+            if outcomes.is_empty()
+        ));
+    }
+
+    #[test]
+    fn test_captureconfig_single_format_still_works() {
+        let config = CaptureConfig::builder()
+            .format(FourCC::YUYV)
+            .build()
+            .expect("single-format config should build");
+
+        assert_eq!(config.format(), FourCC::YUYV);
+        assert_eq!(config.format_preferences(), &[FourCC::YUYV]);
+    }
+
+    #[test]
+    fn test_captureconfig_preserves_format_preference_order() {
+        let formats = vec![FourCC::NV12, FourCC::YUYV, FourCC::RGB3];
+        let config = CaptureConfig::builder()
+            .format_preferences(formats.clone())
+            .build()
+            .expect("preference-list config should build");
+
+        assert_eq!(config.format_preferences(), formats.as_slice());
+        assert_eq!(config.format(), FourCC::NV12);
     }
 }

@@ -41,15 +41,19 @@ pub mod validation;
 pub mod mock;
 
 #[cfg(any(test, feature = "mock"))]
-pub use mock::{MockDevice, MockStream, TestPattern};
+pub use mock::{MockDevice, MockFormatResponse, MockStream, TestPattern};
 
 pub use config::{CaptureConfig, CaptureConfigBuilder};
 pub use device::V4L2Device;
-pub use error::{CaptureError, ConfigError, DeviceError, Result, StreamError};
+pub use error::{
+    CaptureError, ConfigError, DeviceError, FormatNegotiationOutcome, FrameError, Result,
+    StreamError,
+};
 pub use session::{CaptureSession, CaptureStream};
 pub use stream::V4L2Stream;
 pub use traits::{
     BorrowedCaptureStream, CameraDevice, CaptureStream as CaptureStreamTrait, DeviceCapabilities,
-    Format, FourCC, Frame, FrameMetadata, FrameRef,
+    Format, FourCC, Frame, FrameLayout, FrameMetadata, FrameRef, LayoutInvalidField,
+    LayoutValidationError,
 };
 pub use validation::{validate_color_bars, validate_frame_sequence, validate_gradient};

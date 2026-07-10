@@ -59,7 +59,7 @@ pub fn validate_color_bars(frame: &Frame, format: &Format) -> Result<()> {
         #[allow(clippy::cast_possible_truncation)]
         let sample_x = (bar_idx as u32 * bar_width) + (bar_width / 2);
 
-        let actual_rgb = frame.pixel_at(sample_x, center_y, width).ok_or_else(|| {
+        let actual_rgb = frame.pixel_at(sample_x, center_y)?.ok_or_else(|| {
             StreamError::CaptureFailed(format!("Failed to get pixel at ({sample_x}, {center_y})"))
         })?;
 
@@ -110,7 +110,7 @@ pub fn validate_gradient(frame: &Frame, format: &Format) -> Result<()> {
     let mut last_luminance: Option<f32> = None;
 
     for x in (0..width).step_by(sample_step as usize) {
-        let (r, g, b) = frame.pixel_at(x, center_y, width).ok_or_else(|| {
+        let (r, g, b) = frame.pixel_at(x, center_y)?.ok_or_else(|| {
             StreamError::CaptureFailed(format!("Failed to get pixel at ({x}, {center_y})"))
         })?;
 
@@ -368,7 +368,8 @@ mod tests {
     #[test]
     fn test_validate_frame_sequence_wraparound() {
         // u32::MAX → 0 is a valid wrap-around, not a gap
-        use crate::traits::FrameMetadata;
+        use crate::traits::{FourCC, FrameLayout, FrameMetadata};
+        let layout = FrameLayout::new(640, 480, FourCC::YUYV, 1280, 614_400).expect("valid layout");
         let make = |seq: u32| Frame {
             data: vec![],
             metadata: FrameMetadata {
@@ -376,6 +377,7 @@ mod tests {
                 timestamp: std::time::Duration::ZERO,
                 bytes_used: 0,
             },
+            layout,
         };
         let frames = vec![make(u32::MAX), make(0)];
         assert!(
@@ -386,7 +388,8 @@ mod tests {
 
     #[test]
     fn test_validate_frame_sequence_non_wraparound_gap() {
-        use crate::traits::FrameMetadata;
+        use crate::traits::{FourCC, FrameLayout, FrameMetadata};
+        let layout = FrameLayout::new(640, 480, FourCC::YUYV, 1280, 614_400).expect("valid layout");
         let make = |seq: u32| Frame {
             data: vec![],
             metadata: FrameMetadata {
@@ -394,6 +397,7 @@ mod tests {
                 timestamp: std::time::Duration::ZERO,
                 bytes_used: 0,
             },
+            layout,
         };
         let frames = vec![make(5), make(7)]; // gap: expected 6, got 7
         assert!(validate_frame_sequence(&frames).is_err());

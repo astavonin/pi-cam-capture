@@ -33,9 +33,9 @@ fn run() -> pi_cam_capture::Result<()> {
     println!("Driver: {}", session.capabilities().driver);
     println!(
         "Format: {}x{} {:?}",
-        session.actual_format().width,
-        session.actual_format().height,
-        session.actual_format().fourcc
+        session.frame_layout().width,
+        session.frame_layout().height,
+        session.frame_layout().fourcc
     );
     println!();
 
